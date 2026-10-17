@@ -5,6 +5,8 @@ import AutomationCore
 @MainActor
 struct CalibrationView: View {
     @ObservedObject var capture: CaptureModel
+    let configuration: AutomationConfiguration
+    let settings: WorkflowSettings
 
     var body: some View {
         GroupBox("Window capture & visual calibration") {
@@ -52,10 +54,19 @@ struct CalibrationView: View {
                     Text("Frame: \(date.formatted()) • \(capture.previewEnabled ? "preview updating" : "frozen snapshot")")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+                calibrationPlan
                 if let image = capture.image {
                     Picker("Target label", selection: $capture.role) {
-                        ForEach(TargetRole.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                    }
+                        ForEach(CalibrationTargetGroup.allCases, id: \.self) { group in
+                            Section(group.rawValue) {
+                                ForEach(TargetRole.calibrationOrder.filter { $0.calibrationGuide.group == group }, id: \.self) { role in
+                                    Text("\(role.rawValue) — \(role.calibrationGuide.title)")
+                                        .tag(role).help(role.calibrationGuide.instruction)
+                                }
+                            }
+                        }
+                    }.pickerStyle(.menu)
+                    targetDescription
                     TextField("Optional exact OCR phrase (must also match the template)", text: $capture.expectedText)
                     HStack {
                         Text("Minimum similarity \(capture.threshold, specifier: "%.2f")")
@@ -106,6 +117,77 @@ struct CalibrationView: View {
             }.padding(8)
         }
         .onDisappear { capture.stopPreview() }
+        .onChange(of: capture.role) { _, role in
+            let target = capture.profile.targets.first { $0.role == role }
+            capture.expectedText = target?.expectedText ?? ""
+            capture.threshold = target?.threshold ?? 0.95
+        }
+    }
+
+    private var requiredRoles: Set<TargetRole> {
+        CalibrationRequirements.roles(configuration: configuration, settings: settings)
+    }
+
+    private var calibrationPlan: some View {
+        GroupBox("Calibration plan — jewel banking first") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("1. Select the active open.mu window → Capture snapshot → freeze preview → label game area, normal play and the inventory button.")
+                Text("2. Open inventory manually → recapture → label inventory, its close button and the bank button. Open the bank → recapture → label bank title, Transfer, excluded Withdraw and bank close.")
+                Text("3. Use real before/pending/after transfer examples. Label Processing and the proof chosen in Workflows: \(verificationTarget.rawValue). Also label real interruption states before live use.")
+                Text("4. Save calibration → capture fresh examples → Detect only → inspect matches/OCR → confirm review on Dashboard. After Start, focus the game during the countdown.")
+                Text("Jewel banking transfers jewels already in inventory. Add Helper looting, skills, monitoring and recovery after this workflow works.")
+                    .foregroundStyle(.secondary)
+                if configuration.mode == .fullAutomation {
+                    Text("To test banking first in Full automation, enable banking and turn off Helper, skills, recovery and the banking-trigger monitor. After depositing, full mode keeps monitoring the game until you press Stop.")
+                        .foregroundStyle(.secondary)
+                    if settings.bankingEnabled && settings.inventoryMonitoringEnabled {
+                        Text("The banking-trigger monitor is enabled: also label bankingTrigger for repeat banking. This target is needed by the monitor even though Start does not require it.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Text("Current options: \(configuration.mode.title) • jewel banking \(settings.bankingEnabled ? "enabled" : "disabled"). Change options on Dashboard / Workflows to update this checklist.")
+                DisclosureGroup("Required before Start: \(requiredRoles.filter { hasLabel($0) }.count)/\(requiredRoles.count) targets labeled — select a row to label it") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(TargetRole.calibrationOrder.filter { requiredRoles.contains($0) }, id: \.self) { role in
+                            Button { capture.role = role } label: {
+                                HStack(alignment: .top) {
+                                    Image(systemName: hasLabel(role) ? "checkmark.circle" : "circle")
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text("\(role.rawValue) — \(role.calibrationGuide.title)").bold()
+                                        Text("\(role.calibrationGuide.kind): \(role.calibrationGuide.instruction)")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                        }
+                    }.padding(.top, 8)
+                }
+                Text("Label count does not verify detection. Each target needs its own real screen example; not every target should match the same screenshot. Click targets use the center of your rectangle.")
+                    .foregroundStyle(.secondary)
+            }.font(.callout).frame(maxWidth: .infinity, alignment: .leading).padding(8)
+        }
+    }
+
+    private var verificationTarget: TargetRole { settings.bankingVerification.countRole ?? .transferSuccess }
+
+    private func hasLabel(_ role: TargetRole) -> Bool {
+        capture.profile.targets.contains {
+            $0.role == role && (role == .gameViewport || $0.template != nil || !($0.expectedText ?? "").isEmpty)
+        }
+    }
+
+    private var targetDescription: some View {
+        let guide = capture.role.calibrationGuide
+        return GroupBox("\(guide.title) • \(guide.kind)") {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(guide.group.rawValue).font(.caption).foregroundStyle(.secondary)
+                Text(guide.instruction)
+                Text(requiredRoles.contains(capture.role)
+                     ? "Required before Start with your current options."
+                     : "Not required by Start with your current options; check the workflow description above for when this target is needed.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+        }
     }
 }
 

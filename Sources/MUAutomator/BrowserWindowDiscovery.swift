@@ -9,6 +9,10 @@ struct BrowserWindowCandidate: Sendable {
     let title: String?
     let bounds: CGRect
 
+    init(id: UInt32, processID: Int32, title: String?, bounds: CGRect) {
+        self.id = id; self.processID = processID; self.title = title; self.bounds = bounds
+    }
+
     init?(_ window: SCWindow) {
         guard let app = window.owningApplication,
               BrowserWindowDiscovery.browserBundleIDs.contains(app.bundleIdentifier) else { return nil }
@@ -24,48 +28,95 @@ enum BrowserWindowDiscovery {
         "com.microsoft.edgemac", "com.brave.Browser", "com.vivaldi.Vivaldi", "org.mozilla.firefox"
     ]
 
+    struct Report: Sendable {
+        var windowIDs: Set<UInt32> = []
+        var details: [String] = []
+    }
+
     /// Public Accessibility metadata only. Never reads address-bar text or page
     /// links, which can contain open.mu without being the active document.
     static func matchingWindowIDs(_ candidates: [BrowserWindowCandidate]) -> Set<UInt32> {
-        guard AXIsProcessTrusted() else { return [] }
-        var result: Set<UInt32> = []
-        for (pid, group) in Dictionary(grouping: candidates, by: \.processID) {
+        inspect(candidates).windowIDs
+    }
+
+    static func inspect(_ candidates: [BrowserWindowCandidate]) -> Report {
+        var report = Report()
+        guard AXIsProcessTrusted() else {
+            report.details.append("Accessibility access is missing for this copy of MU Automator.")
+            return report
+        }
+        if candidates.isEmpty {
+            report.details.append("ScreenCaptureKit reported no supported browser windows.")
+        }
+        for (pid, group) in Dictionary(grouping: candidates, by: \.processID).sorted(by: { $0.key < $1.key }) {
             let app = AXUIElementCreateApplication(pid)
-            AXUIElementSetMessagingTimeout(app, 0.15)
-            guard let accessibleWindows = attribute(app, kAXWindowsAttribute as CFString) as? [AXUIElement] else { continue }
-            let until = Date().addingTimeInterval(2)
-            for window in accessibleWindows {
-                guard Date() < until else { break }
-                AXUIElementSetMessagingTimeout(window, 0.15)
-                guard let frame = bounds(window) else { continue }
-                let title = attribute(window, kAXTitleAttribute as CFString) as? String
-                let matches = group.filter { candidate in
-                    sameBounds(candidate.bounds, frame)
-                        && (candidate.title?.isEmpty != false || candidate.title == title)
+            // Chromium activates native accessibility when its application role
+            // is read. Querying only AXWindows can leave its web tree dormant.
+            _ = attribute(app, kAXRoleAttribute as CFString)
+            var value: CFTypeRef?
+            let error = AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value)
+            guard error == .success, let accessibleWindows = value as? [AXUIElement] else {
+                report.details.append("Browser PID \(pid): cannot read AXWindows (AX error \(error.rawValue)).")
+                continue
+            }
+            let appDeadline = Date().addingTimeInterval(8)
+            let frames = accessibleWindows.map { Date() < appDeadline ? bounds($0) : nil }
+            var inspected: Set<UInt32> = []
+            for (index, window) in accessibleWindows.enumerated() {
+                guard Date() < appDeadline else { break }
+                guard let frame = frames[index],
+                      let candidate = matchingCandidate(group, bounds: frame) else { continue }
+                // A unique SCWindow must also have exactly one AX window at its
+                // bounds. Never guess between overlapping browser windows.
+                guard frames.compactMap({ $0 }).filter({ sameBounds($0, frame) }).count == 1 else { continue }
+                inspected.insert(candidate.id)
+                let lookup = activeDocumentURL(window, until: min(appDeadline, Date().addingTimeInterval(2)))
+                if GamePagePolicy.allows(lookup.url) {
+                    report.windowIDs.insert(candidate.id)
+                    report.details.append("Window \(candidate.id): verified active https://open.mu document.")
+                } else {
+                    report.details.append("Window \(candidate.id): \(lookup.reason)")
                 }
-                // Overlapping indistinguishable windows cannot be mapped safely.
-                guard matches.count == 1, let candidate = matches.first,
-                      let url = activeDocumentURL(window, until: until), GamePagePolicy.allows(url) else { continue }
-                result.insert(candidate.id)
+            }
+            for candidate in group where !inspected.contains(candidate.id) {
+                let matches = frames.compactMap { $0 }.filter { sameBounds($0, candidate.bounds) }
+                let reason: String
+                if Date() >= appDeadline {
+                    reason = "Browser lookup timed out before this window was inspected. Restore the game window and refresh."
+                } else if matches.isEmpty {
+                    reason = "No matching Accessibility window bounds among \(accessibleWindows.count) browser windows. Restore the game window and refresh."
+                } else {
+                    reason = "Browser windows have indistinguishable bounds. Move overlapping windows apart, then refresh."
+                }
+                report.details.append("Window \(candidate.id): \(reason)")
             }
         }
-        return result
+        return report
+    }
+
+    // Titles can differ between ScreenCaptureKit and AX, or change while the
+    // page loads. Same-process, unique geometry identifies the discovery window.
+    // URL verification is still required before admitting it to the picker.
+    static func matchingCandidate(_ candidates: [BrowserWindowCandidate], bounds: CGRect) -> BrowserWindowCandidate? {
+        let matches = candidates.filter { sameBounds($0.bounds, bounds) }
+        return matches.count == 1 ? matches.first : nil
     }
 
     static func focusedWindowIsGame(_ candidate: BrowserWindowCandidate) -> Bool {
         guard AXIsProcessTrusted() else { return false }
         let app = AXUIElementCreateApplication(candidate.processID)
-        AXUIElementSetMessagingTimeout(app, 0.15)
+        _ = attribute(app, kAXRoleAttribute as CFString)
         guard let value = attribute(app, kAXFocusedWindowAttribute as CFString), CFGetTypeID(value) == AXUIElementGetTypeID() else { return false }
         let window = value as! AXUIElement
         AXUIElementSetMessagingTimeout(window, 0.15)
         guard let frame = bounds(window), sameBounds(frame, candidate.bounds),
               candidate.title?.isEmpty != false || candidate.title == (attribute(window, kAXTitleAttribute as CFString) as? String),
-              let url = activeDocumentURL(window, until: Date().addingTimeInterval(1)) else { return false }
-        return GamePagePolicy.allows(url)
+              GamePagePolicy.allows(activeDocumentURL(window, until: Date().addingTimeInterval(1)).url) else { return false }
+        return true
     }
 
     private static func attribute(_ element: AXUIElement, _ name: CFString) -> CFTypeRef? {
+        AXUIElementSetMessagingTimeout(element, 0.15)
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, name, &value) == .success else { return nil }
         return value
@@ -77,25 +128,61 @@ enum BrowserWindowDiscovery {
         return nil
     }
 
-    private static func activeDocumentURL(_ window: AXUIElement, until: Date) -> String? {
-        // AXDocument is window-scoped and provided by browsers such as Safari.
-        if let document = address(attribute(window, kAXDocumentAttribute as CFString)), URL(string: document)?.scheme != nil {
-            return document
-        }
-        var queue: [AXUIElement] = [window]
-        var cursor = 0
-        while cursor < queue.count && cursor < 300 && Date() < until {
-            let element = queue[cursor]; cursor += 1
-            AXUIElementSetMessagingTimeout(element, 0.15)
-            if (attribute(element, kAXRoleAttribute as CFString) as? String) == "AXWebArea" {
-                // Do not descend into links or embedded frames within the page.
-                return address(attribute(element, kAXURLAttribute as CFString))
+    struct DocumentLookup {
+        let url: String?
+        let reason: String
+    }
+
+    static func activeDocumentURL(
+        _ window: AXUIElement, until: Date,
+        read: (AXUIElement, CFString) -> CFTypeRef? = attribute,
+        pause: () -> Void = { Thread.sleep(forTimeInterval: 0.15) }
+    ) -> DocumentLookup {
+        var reason = "Active document URL is unavailable. Keep the game tab active and refresh after Chrome finishes loading."
+        // Reading the web-content container's role can start Chromium's renderer
+        // accessibility tree asynchronously. Retry a cold tree, within the same
+        // deadline, instead of silently dropping the window on its first read.
+        for attempt in 0..<3 {
+            guard Date() < until else { break }
+            if let document = address(read(window, kAXDocumentAttribute as CFString)),
+               URL(string: document)?.scheme != nil {
+                return documentLookup(document)
             }
-            if let children = attribute(element, kAXChildrenAttribute as CFString) as? [AXUIElement] {
-                queue.append(contentsOf: children.prefix(max(0, 300 - queue.count)))
+            var queue: [AXUIElement] = [window]
+            var cursor = 0
+            while cursor < queue.count && cursor < 500 && Date() < until {
+                let element = queue[cursor]; cursor += 1
+                let role = read(element, kAXRoleAttribute as CFString) as? String
+                if (read(element, "AXHidden" as CFString) as? Bool) == true { continue }
+                if role == "AXWebArea" {
+                    // Stop at the outer document, even for another site or a
+                    // missing URL. Never accept an open.mu iframe or page link.
+                    if let url = address(read(element, kAXURLAttribute as CFString)),
+                       URL(string: url)?.scheme != nil {
+                        return documentLookup(url)
+                    }
+                    reason = "Chrome exposed the active web area without its URL. Wait for the game to load, then refresh."
+                    break
+                }
+                // Browser toolbars can contain hundreds of tab/address controls.
+                // They are not document evidence and can exhaust the walk budget.
+                if ["AXToolbar", "AXMenuBar", "AXMenu", "AXTextField", "AXComboBox", "AXLink", "AXButton"].contains(role ?? "") { continue }
+                if let children = read(element, kAXChildrenAttribute as CFString) as? [AXUIElement] {
+                    queue.append(contentsOf: children.prefix(max(0, 500 - queue.count)))
+                }
             }
+            if Date() >= until || cursor >= 500 {
+                reason = "Accessibility document search reached its time/node limit. Restore the game window and refresh."
+            }
+            if attempt < 2, Date().addingTimeInterval(0.15) < until { pause() }
         }
-        return nil
+        return DocumentLookup(url: nil, reason: reason)
+    }
+
+    private static func documentLookup(_ url: String) -> DocumentLookup {
+        DocumentLookup(url: url, reason: GamePagePolicy.allows(url)
+            ? "Verified active https://open.mu document."
+            : "Active document is not the allowed https://open.mu origin. Activate the game tab, then refresh.")
     }
 
     private static func bounds(_ element: AXUIElement) -> CGRect? {

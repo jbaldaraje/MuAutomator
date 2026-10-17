@@ -14,7 +14,7 @@ final class CaptureModel: ObservableObject {
     @Published private(set) var busy = false
     @Published private(set) var message = "Screen Recording and Accessibility are needed to find and capture open.mu browser windows."
     @Published private(set) var profile = CalibrationProfile()
-    @Published var role: TargetRole = .inventoryPanel
+    @Published var role: TargetRole = .gameViewport
     @Published var expectedText = ""
     @Published var threshold = 0.95
     @Published private(set) var detection: Observation?
@@ -125,17 +125,17 @@ final class CaptureModel: ObservableObject {
                 && $0.owningApplication?.processID != ProcessInfo.processInfo.processIdentifier
             }
             let candidates = eligible.compactMap(BrowserWindowCandidate.init)
-            let confirmed = await Task.detached(priority: .utility) {
-                BrowserWindowDiscovery.matchingWindowIDs(candidates)
+            let report = await Task.detached(priority: .utility) {
+                BrowserWindowDiscovery.inspect(candidates)
             }.value
             try Task.checkCancellation()
-            windows = eligible.filter { confirmed.contains($0.windowID) }.sorted {
+            windows = eligible.filter { report.windowIDs.contains($0.windowID) }.sorted {
                 let left = ($0.owningApplication?.applicationName ?? "") + ($0.title ?? "")
                 let right = ($1.owningApplication?.applicationName ?? "") + ($1.title ?? "")
                 return left == right ? $0.windowID < $1.windowID : left < right
             }
             if let id = selectedID, !windows.contains(where: { $0.windowID == id }) { select(nil) }
-            discoveryDetails = "Checked \(candidates.count) browser windows; \(windows.count) verified open.mu windows. Screen Recording precheck: \(allowed ? "allowed" : "not confirmed")."
+            discoveryDetails = (["Checked \(candidates.count) browser windows; \(windows.count) verified open.mu windows. Screen Recording precheck: \(allowed ? "allowed" : "not confirmed")."] + report.details).joined(separator: "\n")
             message = windows.isEmpty
                 ? "No verified open.mu window found. Make https://open.mu the active tab in Chrome, allow Screen Recording and Accessibility, then refresh. Windows with unreadable URLs stay hidden."
                 : "Found \(windows.count) open.mu windows. Select the game below. Other websites are hidden."

@@ -25,6 +25,8 @@ Dry run is enabled by default. Detect only and the live preview never send input
 
 ## Calibration
 
+Start with the [jewel-banking calibration guide](docs/CALIBRATION-GUIDE.md), then add Helper, skills and recovery for full automation. Calibration now groups targets in workflow order, explains what to mark for every label, and shows the targets required by the currently selected mode and options. Changing a label also loads that target's OCR/threshold settings instead of carrying them over from the previous label.
+
 1. In Calibration, allow Screen Recording, refresh windows, and make open.mu the active tab and select its Chrome window.
 2. Capture a snapshot or enable live preview. Freeze preview before marking targets.
 3. Label `gameViewport` around only the game area. Label controls and state indicators from real examples, using separate screenshots for different dialogs/states. No game coordinates or shortcuts are prefilled.
@@ -56,7 +58,7 @@ Configuration, workflow settings, regions and small templates are saved in `~/Li
 
 ## Validation in this cloud environment
 
-The portable core built successfully and all 35 XCTest tests passed with official Swift 6.0.3 in Docker:
+The portable core built successfully and all 40 XCTest tests passed with official Swift 6.0.3 in Docker:
 
 ```sh
 docker run --rm --network none -v "$PWD":/src -w /src \
@@ -87,6 +89,12 @@ Alternatively use Activity Monitor → MUAutomator → Sample Process. The main-
 ## Only open.mu windows are listed
 
 The picker verifies the active document URL through public macOS Accessibility metadata. It accepts HTTPS on the exact `open.mu` host (default port or 443), including versioned game paths. Other domains, misleading titles/links, inactive game tabs, and unreadable URLs are excluded. No browser tab is switched automatically. Make the game the active tab, grant Accessibility using the Calibration button, then refresh. Chrome is the primary target; other listed browsers work only when they expose the required active-document metadata. Capture rechecks the URL; live automation rechecks the focused browser URL before each input operation. No AppleScript, browser extension, private browser API, or extra network request is used.
+
+Discovery reads the browser application's Accessibility role to activate Chromium's native accessibility support, then retries an initially empty web tree within a bounded background lookup. Each window gets its own document-search budget within an eight-second per-browser limit. Discovery matches unique window bounds within the same process, so a stale/different title from ScreenCaptureKit no longer hides an otherwise identifiable game window. Overlapping windows with indistinguishable bounds remain excluded; move them apart and refresh. Live input retains its separate focus/title/layout checks.
+
+The details below the picker now explain each excluded window: an Accessibility error, unmatched/ambiguous bounds, a missing document URL, an origin other than HTTPS open.mu, or a search limit. If Chrome is still missing after rebuilding, copy those details from Calibration. They omit page URLs and titles.
+
+Chromium documents its lazy activation in [the application role getter](https://github.com/chromium/chromium/blob/main/chrome/browser/chrome_browser_application_mac.mm) and [the web-content container role getter](https://github.com/chromium/chromium/blob/main/content/app_shim_remote_cocoa/render_widget_host_view_cocoa.mm). Actual Chrome/macOS interoperability still needs local acceptance testing.
 
 ## If the window menu is empty
 
