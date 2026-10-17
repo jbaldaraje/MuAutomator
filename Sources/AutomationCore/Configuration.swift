@@ -18,10 +18,30 @@ public struct AutomationConfiguration: Codable, Equatable, Sendable {
     public var helperEnabled = true
     public var recoveryEnabled = false
     public var skillsEnabled = false
+    public var strictGameplayRecognition = false
     public var actionTimeoutSeconds = 10
     public var maximumRetries = 2
 
     public init() {}
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, mode, dryRun, helperEnabled, recoveryEnabled, skillsEnabled
+        case strictGameplayRecognition, actionTimeoutSeconds, maximumRetries
+    }
+
+    public init(from decoder: Decoder) throws {
+        self.init()
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? schemaVersion
+        mode = try values.decodeIfPresent(AutomationMode.self, forKey: .mode) ?? mode
+        dryRun = try values.decodeIfPresent(Bool.self, forKey: .dryRun) ?? dryRun
+        helperEnabled = try values.decodeIfPresent(Bool.self, forKey: .helperEnabled) ?? helperEnabled
+        recoveryEnabled = try values.decodeIfPresent(Bool.self, forKey: .recoveryEnabled) ?? recoveryEnabled
+        skillsEnabled = try values.decodeIfPresent(Bool.self, forKey: .skillsEnabled) ?? skillsEnabled
+        strictGameplayRecognition = try values.decodeIfPresent(Bool.self, forKey: .strictGameplayRecognition) ?? false
+        actionTimeoutSeconds = try values.decodeIfPresent(Int.self, forKey: .actionTimeoutSeconds) ?? actionTimeoutSeconds
+        maximumRetries = try values.decodeIfPresent(Int.self, forKey: .maximumRetries) ?? maximumRetries
+    }
 
     public func validate() throws {
         guard schemaVersion == 1 else { throw ConfigurationError.unsupportedVersion }

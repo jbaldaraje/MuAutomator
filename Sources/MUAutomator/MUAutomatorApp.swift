@@ -158,6 +158,11 @@ struct DashboardView: View {
                              ? "Bank jewels already in inventory, verify the transfer, close panels, then stop."
                              : "Bank, activate enabled helper, monitor farming, and run enabled skills and recovery.")
                         Toggle("Dry run (use Detect only in Calibration)", isOn: $model.configuration.dryRun)
+                        Toggle("Strict gameplay recognition (require normalGameplay)", isOn: $model.configuration.strictGameplayRecognition)
+                        Text(model.configuration.strictGameplayRecognition
+                             ? "Strict: general gameplay and interruption labels are required."
+                             : "Relaxed: run using your calibrated action targets without a normalGameplay match. Window focus, explicit interruption matches and transfer verification still apply.")
+                            .font(.caption).foregroundStyle(.secondary)
                         Toggle("I explicitly allow live mouse and keyboard input to my selected game window", isOn: $model.liveConsent)
                         if model.runner.stage == .waitingForManualIntervention {
                             Toggle("I inspected the game and log and resolved the previous unverified result", isOn: $model.failureReviewed)

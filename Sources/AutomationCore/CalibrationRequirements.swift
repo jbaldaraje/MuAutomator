@@ -3,8 +3,11 @@ import Foundation
 public enum CalibrationRequirements {
     public static func roles(configuration: AutomationConfiguration, settings: WorkflowSettings,
                              routeTest: Bool = false) -> Set<TargetRole> {
-        var roles: Set<TargetRole> = [.gameViewport, .normalGameplay, .disconnected, .loginScreen, .characterSelection,
-                                      .browserLoading, .loadingTransition, .deathIndicator, .respawnIndicator]
+        var roles: Set<TargetRole> = [.gameViewport]
+        if configuration.strictGameplayRecognition {
+            roles.formUnion([.normalGameplay, .disconnected, .loginScreen, .characterSelection,
+                             .browserLoading, .loadingTransition, .deathIndicator, .respawnIndicator])
+        }
         if settings.bankingEnabled && !routeTest {
             roles.formUnion([.inventoryControl, .inventoryPanel, .bankControl, .bankTitle, .transferButton,
                              .withdrawExcluded, .processingIndicator, .bankClose, .inventoryClose])

@@ -21,6 +21,8 @@ You can also open `MUAutomator.xcodeproj`, select the shared MUAutomator scheme 
 - **Jewels only:** open inventory and bank, deposit once, wait for a new calibrated success indicator, close panels, then stop. It never starts the helper, rotates skills, moves, or recovers.
 - **Full automation:** run enabled banking/helper modules, monitor gameplay, trigger banking from a configured visual condition with cooldown, run configured skills, and recover through a validated checkpoint route.
 
+**Relaxed gameplay recognition is now the default**, including when loading existing settings. It uses your calibrated action targets without requiring a `normalGameplay` match or general interruption labels at Start. Enable “Strict gameplay recognition” on Dashboard to restore the general-scene requirements. Existing interruption labels still block input when they match; action-target matching, inventory/bank transitions, transfer proof, focus/window binding, permissions and cancellation remain active.
+
 Dry run is enabled by default. Detect only and the live preview never send input. Start requires dry run off, explicit input consent, reviewed detection, required calibration, and the selected game window in focus after a five-second countdown. Settings lock during execution, pause, recording and startup. A previous unverified result must be acknowledged before a new workflow can start.
 
 ## Calibration
@@ -58,7 +60,7 @@ Configuration, workflow settings, regions and small templates are saved in `~/Li
 
 ## Validation in this cloud environment
 
-The portable core built successfully and all 42 XCTest tests passed with official Swift 6.0.3 in Docker:
+The portable core built successfully and all 48 XCTest tests passed with official Swift 6.0.3 in Docker:
 
 ```sh
 docker run --rm --network none -v "$PWD":/src -w /src \

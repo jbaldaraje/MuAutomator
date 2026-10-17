@@ -112,7 +112,9 @@ public final class AutomationCoordinator {
             if let requiredVisible, !frame.has(requiredVisible) {
                 throw WorkflowFailure.uncertain("\(requiredVisible.rawValue) disappeared while waiting for \(label)")
             }
-            if frame.state == .unknown { throw WorkflowFailure.uncertain("Ambiguous state while waiting for \(label)") }
+            if config.strictGameplayRecognition && frame.state == .unknown {
+                throw WorkflowFailure.uncertain("Ambiguous state while waiting for \(label)")
+            }
             if condition(frame) {
                 lastVerifiedAction = label
                 transition(stage, "Verified \(label)")
@@ -130,7 +132,12 @@ public final class AutomationCoordinator {
     @discardableResult
     private func action(_ action: GameAction, requiring role: TargetRole) async throws -> Observation {
         let frame = try await observe()
-        guard !frame.blocksInput, frame.has(role) else { throw WorkflowFailure.unsafe("Missing or unsafe precondition: \(role.rawValue)") }
+        guard frame.permitsInput(strictGameplayRecognition: config.strictGameplayRecognition) else {
+            throw WorkflowFailure.unsafe("Input blocked by detected interruption state: \(frame.state.rawValue)")
+        }
+        guard (role == .normalGameplay && !config.strictGameplayRecognition) || frame.has(role) else {
+            throw WorkflowFailure.unsafe("Missing precondition target: \(role.rawValue)")
+        }
         if case let .click(target) = action {
             guard target != .withdrawExcluded, frame.has(target) else { throw WorkflowFailure.unsafe("Click target not verified: \(target.rawValue)") }
             if target == .transferButton && ((settings.bankingVerification == .newSuccessIndicator && frame.has(.transferSuccess)) || frame.has(.processingIndicator)) {
@@ -166,7 +173,9 @@ public final class AutomationCoordinator {
                 try await recover(initial: frame)
                 recoveries += 1
             } else {
-                guard [.normalGameplay, .helperRunning, .inventoryOpen].contains(frame.state) else {
+                guard [.normalGameplay, .helperRunning, .inventoryOpen].contains(frame.state)
+                    || (!config.strictGameplayRecognition && frame.state == .unknown
+                        && frame.permitsInput(strictGameplayRecognition: false)) else {
                     throw WorkflowFailure.uncertain("Unknown or unexpected farming state: \(frame.state.rawValue)")
                 }
                 if settings.inventoryMonitoringEnabled && settings.bankingEnabled && frame.has(.bankingTrigger)
@@ -213,7 +222,10 @@ public final class AutomationCoordinator {
         try await action(.click(.bankClose), requiring: .bankTitle)
         _ = try await wait("bank closure") { !$0.has(.bankTitle) && $0.has(.inventoryPanel) }
         try await action(.click(.inventoryClose), requiring: .inventoryPanel)
-        _ = try await wait("inventory closure") { !$0.has(.inventoryPanel) && $0.has(.normalGameplay) }
+        _ = try await wait("inventory closure") {
+            !$0.has(.inventoryPanel) && ($0.has(.normalGameplay)
+                || (!self.config.strictGameplayRecognition && $0.permitsInput(strictGameplayRecognition: false)))
+        }
     }
 
     private func helper() async throws {
@@ -236,7 +248,9 @@ public final class AutomationCoordinator {
         for skill in settings.skills {
             if let last = skillTimes[skill.id], Date().timeIntervalSince(last) < skill.cooldownSeconds { continue }
             let frame = try await observe()
-            guard [.normalGameplay, .helperRunning].contains(frame.state) else { return }
+            guard [.normalGameplay, .helperRunning].contains(frame.state)
+                || (!config.strictGameplayRecognition && frame.state == .unknown
+                    && frame.permitsInput(strictGameplayRecognition: false)) else { return }
             try await action(.key(skill.keyCode), requiring: .normalGameplay)
             skillTimes[skill.id] = Date()
             if let target = skill.verification { _ = try await wait("skill evidence") { $0.has(target) } }
@@ -284,7 +298,9 @@ public final class AutomationCoordinator {
             // Respawn is allowed only for a calibrated route precondition; never for banking/skills.
             let frame = try await observe()
             guard frame.has(step.before), !frame.has(.deathIndicator),
-                  [.normalGameplay, .helperRunning, .warpWindowOpen, .respawnScreen].contains(frame.state) else {
+                  ([.normalGameplay, .helperRunning, .warpWindowOpen, .respawnScreen].contains(frame.state)
+                   || (!config.strictGameplayRecognition && frame.state == .unknown
+                       && frame.permitsInput(strictGameplayRecognition: false))) else {
                 throw WorkflowFailure.unsafe("Route checkpoint lost or unsafe route state")
             }
             try await gate()
@@ -293,6 +309,9 @@ public final class AutomationCoordinator {
             _ = try await wait("route checkpoint \(step.after.rawValue)", timeout: remaining()) { $0.has(step.after) }
         }
         transition(.verifyingLocation, "Verifying destination and gameplay")
-        _ = try await wait("farming destination", timeout: remaining()) { $0.has(.destinationLandmark) && $0.has(.normalGameplay) }
+        _ = try await wait("farming destination", timeout: remaining()) {
+            $0.has(.destinationLandmark) && ($0.has(.normalGameplay)
+                || (!self.config.strictGameplayRecognition && $0.permitsInput(strictGameplayRecognition: false)))
+        }
     }
 }

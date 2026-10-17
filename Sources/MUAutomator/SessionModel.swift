@@ -108,7 +108,8 @@ final class SessionModel: ObservableObject {
                     throw WorkflowFailure.prerequisite("Configure and manually validate the recovery route first")
                 }
             }
-            let io = try MacWorkflowIO(window: window, profile: capture.profile)
+            let io = try MacWorkflowIO(window: window, profile: capture.profile,
+                                       strictGameplayRecognition: configuration.strictGameplayRecognition)
             capture.stopPreview()
             save()
             failureReviewed = false
