@@ -2,7 +2,10 @@ name: macOS validation
 on: [push, pull_request, workflow_dispatch]
 jobs:
   build-and-test:
-    runs-on: macos-14
+    strategy:
+      matrix:
+        os: [macos-14, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - name: Core tests and macOS executable compilation

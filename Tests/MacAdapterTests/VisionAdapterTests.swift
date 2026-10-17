@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import Vision
 @testable import MUAutomator
 import AutomationCore
 
@@ -12,7 +13,7 @@ final class VisionAdapterTests: XCTestCase {
 
     func testReferenceFrameBankDetectionAndOtherDialogRejection() throws {
         let bank = try image("bank")
-        let region = try NormalizedRegion(x: 238.0/640, y: 154.0/412, width: 164.0/640, height: 20.0/412)
+        let region = try AutomationCore.NormalizedRegion(x: 238.0/640, y: 154.0/412, width: 164.0/640, height: 20.0/412)
         let crop = try XCTUnwrap(VisionService.crop(bank, region: region))
         let template = try XCTUnwrap(VisionService.gray(crop))
         var profile = CalibrationProfile()
@@ -24,7 +25,7 @@ final class VisionAdapterTests: XCTestCase {
     }
 
     @MainActor func testTransferWithdrawOverlapFailsPreflight() async throws {
-        let region = try NormalizedRegion(x: 0.2, y: 0.2, width: 0.2, height: 0.2)
+        let region = try AutomationCore.NormalizedRegion(x: 0.2, y: 0.2, width: 0.2, height: 0.2)
         let template = GrayImage(width: 2, height: 2, pixels: [0,255,0,255])
         var profile = CalibrationProfile()
         profile.targets = [

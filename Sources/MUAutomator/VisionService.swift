@@ -12,7 +12,7 @@ enum VisionService {
                        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue), provider: provider,
                        decode: nil, shouldInterpolate: false, intent: .defaultIntent)
     }
-    static func crop(_ image: CGImage, region: NormalizedRegion) -> CGImage? {
+    static func crop(_ image: CGImage, region: AutomationCore.NormalizedRegion) -> CGImage? {
         image.cropping(to: CGRect(x: region.x * Double(image.width), y: region.y * Double(image.height),
                                  width: region.width * Double(image.width), height: region.height * Double(image.height)).integral)
     }
