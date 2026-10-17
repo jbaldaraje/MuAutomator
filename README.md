@@ -72,7 +72,9 @@ Cloud tasks are already isolated: use the existing checkout; do not create a Git
 
 ## If the app stops responding
 
-The Dashboard reads cached permission status; privacy-service queries run off the main actor. Leaving Calibration freezes its preview and retains the last frame. These lifecycle changes need verification on macOS.
+The supplied macOS 26.0 process sample showed an AttributeGraph dependency cycle while SwiftUI's `StatefulTabContainer` reinserted a screen's accessibility tree, spending most samples printing cycle diagnostics. Navigation now uses ordinary buttons and mounts only the selected screen, removing the native `TabView` path from that sample. Configuration and calibration stay in the app-owned models. Workflow shutdown follows the owning window's close notification instead of root-view disappearance.
+
+The Dashboard renders cached permission status; privacy-service queries run off the main actor. Leaving Calibration freezes its preview while retaining the last frame. The navigation workaround still requires verification on macOS 26.0; Linux checks cannot establish that the hang is resolved.
 
 If a hang persists, capture a process sample while the app is still frozen, before force-quitting:
 

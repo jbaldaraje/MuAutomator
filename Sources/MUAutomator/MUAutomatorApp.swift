@@ -10,27 +10,133 @@ struct MUAutomatorApp: App {
     init() { NSApplication.shared.setActivationPolicy(.regular) }
     var body: some Scene {
         WindowGroup {
-            VStack(spacing: 0) {
-                HStack {
-                    Text("MU Automator").font(.title.bold())
-                    Spacer()
-                    Text(model.runner.stage.rawValue)
-                    Button("Emergency Stop", role: .destructive) { model.stop() }
-                }.padding()
-                TabView {
-                    DashboardView(model: model, capture: model.capture, permissions: model.permissions)
-                        .tabItem { Label("Dashboard", systemImage: "gauge") }
-                    ScrollView { CalibrationView(capture: model.capture).padding() }
-                        .disabled(model.locked).tabItem { Label("Calibration", systemImage: "viewfinder") }
-                    WorkflowSettingsView(model: model).tabItem { Label("Workflows", systemImage: "gearshape") }
-                    RouteRecordingView(model: model, recorder: model.recorder)
-                        .tabItem { Label("Record route", systemImage: "record.circle") }
-                    ActivityLogView(model: model).tabItem { Label("Activity", systemImage: "list.bullet") }
-                }
-            }.frame(minWidth: 1000, minHeight: 700)
-                .onDisappear { model.stop(); model.capture.stopPreview() }
+            AppShellView(model: model)
         }.defaultSize(width: 1100, height: 800)
     }
+}
+
+private enum AppScreen: String, CaseIterable {
+    case dashboard = "Dashboard"
+    case calibration = "Calibration"
+    case workflows = "Workflows"
+    case recording = "Record route"
+    case activity = "Activity"
+
+    var symbol: String {
+        switch self {
+        case .dashboard: return "gauge"
+        case .calibration: return "viewfinder"
+        case .workflows: return "gearshape"
+        case .recording: return "record.circle"
+        case .activity: return "list.bullet"
+        }
+    }
+}
+
+@MainActor
+private struct AppShellView: View {
+    @ObservedObject var model: SessionModel
+    @State private var selection: AppScreen = .dashboard
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("MU Automator").font(.title.bold())
+                Spacer()
+                Text(model.runner.stage.rawValue)
+                Button("Emergency Stop", role: .destructive) { model.stop() }
+            }.padding()
+            HStack(spacing: 8) {
+                ForEach(AppScreen.allCases, id: \.self) { screen in
+                    Button { selection = screen } label: {
+                        Label(screen.rawValue, systemImage: screen.symbol)
+                            .padding(.horizontal, 14).padding(.vertical, 8)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(selection == screen ? Color.accentColor : Color.primary)
+                    .background(Color.accentColor.opacity(selection == screen ? 0.12 : 0),
+                                in: RoundedRectangle(cornerRadius: 6))
+                    .accessibilityAddTraits(selection == screen ? .isSelected : [])
+                }
+                Spacer()
+            }.padding(.horizontal).padding(.bottom, 12)
+            Divider()
+            // macOS 26's native TabView can cycle in StatefulTabContainer's
+            // accessibility graph when reinserting Dashboard. Mount only the
+            // selected screen; durable state stays in the app-owned models.
+            selectedScreen
+                .id(selection)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(minWidth: 1000, minHeight: 700)
+        .background(WindowCloseObserver {
+            model.stop()
+            model.capture.stopPreview()
+        }.frame(width: 0, height: 0))
+    }
+
+    @ViewBuilder private var selectedScreen: some View {
+        switch selection {
+        case .dashboard:
+            DashboardView(model: model, capture: model.capture, permissions: model.permissions)
+        case .calibration:
+            ScrollView { CalibrationView(capture: model.capture).padding() }
+                .disabled(model.locked)
+        case .workflows:
+            WorkflowSettingsView(model: model)
+        case .recording:
+            RouteRecordingView(model: model, recorder: model.recorder)
+        case .activity:
+            ActivityLogView(model: model)
+        }
+    }
+}
+
+// View disappearance also happens during hierarchy updates. Stop automation
+// on the owning window's actual close notification, never on screen changes.
+@MainActor
+private struct WindowCloseObserver: NSViewRepresentable {
+    var onClose: () -> Void
+
+    func makeNSView(context: Context) -> WindowCloseObservationView {
+        WindowCloseObservationView(onClose: onClose)
+    }
+
+    func updateNSView(_ nsView: WindowCloseObservationView, context: Context) {
+        nsView.onClose = onClose
+    }
+
+    static func dismantleNSView(_ nsView: WindowCloseObservationView, coordinator: ()) {
+        nsView.stopObserving()
+    }
+}
+
+@MainActor
+final class WindowCloseObservationView: NSView {
+    var onClose: () -> Void
+
+    init(onClose: @escaping () -> Void) {
+        self.onClose = onClose
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) { return nil }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        stopObserving()
+        if let window {
+            NotificationCenter.default.addObserver(self, selector: #selector(windowWillClose(_:)),
+                                                   name: NSWindow.willCloseNotification, object: window)
+        }
+    }
+
+    func stopObserving() {
+        NotificationCenter.default.removeObserver(self, name: NSWindow.willCloseNotification, object: nil)
+    }
+
+    @objc private func windowWillClose(_ notification: Notification) { onClose() }
 }
 
 @MainActor
