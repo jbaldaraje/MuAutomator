@@ -7,15 +7,15 @@ For a banking-first test in **Full automation**, enable jewel banking in Workflo
 ## Work through these screens in order
 
 1. Open Chrome with `https://open.mu` as the active tab. Keep the window size and browser zoom consistent. In Calibration, grant Screen Recording and Accessibility, refresh windows, and select the game window. Window discovery needs no target labels.
-2. With the game alive and normal dialogs closed, capture a snapshot and freeze preview. Label `gameViewport`, `normalGameplay`, and `inventoryControl`.
+2. With the game alive and normal dialogs closed, capture a snapshot and freeze preview. Label `gameViewport` and `inventoryControl`. `normalGameplay` is optional in the default relaxed recognition mode; label it if you enable Strict gameplay recognition on Dashboard.
 3. Manually open inventory and capture a new snapshot. Label `inventoryPanel`, `bankControl`, and `inventoryClose`.
 4. Manually open the Jewel Bank and capture a new snapshot. Label `bankTitle`, `transferButton`, `withdrawExcluded`, and `bankClose`. Keep Transfer separate from the entire excluded Withdraw button.
 5. Use genuine examples of a manual transfer to label `processingIndicator` and a reliable success signal. In Workflows, choose **one** verification method: `newSuccessIndicator` → `transferSuccess`; `inventoryCountDecrease` → `inventoryCountText`; `bankBalanceIncrease` → `bankBalanceText`. The bank must remain visible during verification. Numeric regions contain only one count in the selected numeric format. A static bank title, Processing, dialog closure or unchanged count is not transfer proof.
-6. Capture real interruption screens to label `disconnected`, `loginScreen`, `characterSelection`, `browserLoading`, `loadingTransition`, `deathIndicator`, and `respawnIndicator`. All seven are required by the current Start checks in both modes, even for a banking-first test. They are separate examples, not features to find in one normal screenshot. Do not substitute ordinary HUD features for missing interruption examples.
+6. Capture real interruption screens to label `disconnected`, `loginScreen`, `characterSelection`, `browserLoading`, `loadingTransition`, `deathIndicator`, and `respawnIndicator`. All seven are required when Strict gameplay recognition is enabled. They are optional for a banking-first test in relaxed recognition; configured interruption labels still block input when they match. Recovery adds its own required death/respawn evidence when enabled. They are separate examples, not features to find in one normal screenshot. Do not substitute ordinary HUD features for missing interruption examples.
 7. Save as startup default (or save a named profile). Capture fresh positive and negative examples and run Detect only. When normal gameplay is visible, interruption labels must not match; in the bank, bankTitle must match while Helper/Warp titles must not. Not every label should match every screenshot. Moving dialogs, changing zoom or resizing invalidates region matching and requires rechecking/recalibration.
 8. Return to Dashboard and click Confirm I reviewed dry-run detection. For a live run, enable jewel banking, turn Dry run off and explicitly allow live input. Click Start in 5 seconds and focus the game. The bank routine opens inventory → opens bank → clicks Transfer once → verifies a new success signal/count change → closes bank → closes inventory. Full automation then continues monitoring; press Stop after confirming the banking-first test. An uncertain transfer stops for manual inspection.
 
-With banking enabled and other modules disabled, the current Start checks require **19 labels**: two setup labels, nine inventory/bank/processing/closure labels, one selected success-proof label, and seven interruption labels. Label presence is only a checklist item; Detect only review still has to establish that the labels work on real game states. Templates use a fixed window-relative region, so capture each target from the screen where it actually appears.
+With banking enabled and other modules disabled, default relaxed recognition requires **11 labels**: `gameViewport`, nine inventory/bank/processing/closure labels, and one selected success-proof label. Strict gameplay recognition requires **19 labels**, adding `normalGameplay` and seven interruption labels. Label presence is only a checklist item; Detect only review still has to establish that the labels work on real game states. Templates use a fixed window-relative region, so capture each target from the screen where it actually appears.
 
 ## Every target label
 
@@ -26,7 +26,7 @@ With banking enabled and other modules disabled, the current Start checks requir
 | Label | Purpose | What to mark |
 | --- | --- | --- |
 | `gameViewport` — Game area | Area | Draw around the entire playable game canvas, including every game button the workflow will click. Exclude Chrome tabs, the address bar and browser controls. This bounds clicks; it is not a gameplay-state indicator. |
-| `normalGameplay` — Normal gameplay | State | While alive and playing with inventory and other dialogs closed, mark a distinctive, stable HUD feature that identifies normal play. Avoid moving monsters, effects, changing numbers and featureless background. |
+| `normalGameplay` — Normal gameplay | State | Optional in relaxed recognition. While alive and playing with inventory and other dialogs closed, mark a distinctive, stable HUD feature that identifies normal play. Avoid moving monsters, effects, changing numbers and featureless background. |
 
 ### 2 · Open inventory
 
@@ -60,7 +60,7 @@ With banking enabled and other modules disabled, the current Start checks requir
 | `bankClose` — Close jewel bank | Click | With the bank open, mark its own close button or X. Its center must be safe to click. After verified transfer, the workflow closes the bank and confirms inventory remains open. |
 | `inventoryClose` — Close inventory | Click | With inventory open and the bank closed, mark the inventory close button or X. After closing, the workflow must see normal gameplay and no inventory panel. |
 
-### 6 · Interruption states — required before live use
+### 6 · Interruption states — strict recognition / recovery
 
 | Label | Purpose | What to mark |
 | --- | --- | --- |
@@ -95,7 +95,7 @@ With banking enabled and other modules disabled, the current Start checks requir
 | Label | Purpose | What to mark |
 | --- | --- | --- |
 | `deathConfirmation` — Independent death confirmation | State | Full mode with recovery enabled: mark a second, independent death-only feature, such as a genuine revive control. It must agree with deathIndicator across fresh frames. Do not reuse the same rectangle or low-health indicator. |
-| `destinationLandmark` — Farming destination reached | State | For recovery or route replay: at the real farming destination, mark a stable, unique location landmark or location text. Route completion requires this marker together with normalGameplay before Helper can restart. |
+| `destinationLandmark` — Farming destination reached | State | For recovery or route replay: at the real farming destination, mark a stable, unique location landmark or location text. Route completion requires this marker before Helper can restart; strict recognition also requires normalGameplay. |
 | `warpPanel` — Warp / travel dialog | State | For routes that use travel: open the actual Warp dialog and mark its unique title or header. The app can recognize this state but does not choose a map or build a route automatically. |
 | `mapControl` — Open map / travel | Route click | Optional route target: mark the actual map or travel button only if your configured route clicks it. Record and verify the real route; no map action is added merely by labeling this target. |
 | `mapDestination` — Choose map destination | Route click | Optional route target: with the correct map/travel dialog open, mark the actual destination control your route should click. Labeling it does not select a destination automatically; add it to a verified route. |

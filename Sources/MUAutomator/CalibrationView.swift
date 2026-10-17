@@ -131,9 +131,9 @@ struct CalibrationView: View {
     private var calibrationPlan: some View {
         GroupBox("Calibration plan — jewel banking first") {
             VStack(alignment: .leading, spacing: 8) {
-                Text("1. Select the active open.mu window → Capture snapshot → freeze preview → label game area, normal play and the inventory button.")
+                Text("1. Select the active open.mu window → Capture snapshot → freeze preview → label game area and the inventory button. The normal-play label is optional in relaxed recognition.")
                 Text("2. Open inventory manually → recapture → label inventory, its close button and the bank button. Open the bank → recapture → label bank title, Transfer, excluded Withdraw and bank close.")
-                Text("3. Use real before/pending/after transfer examples. Label Processing and the proof chosen in Workflows: \(verificationTarget.rawValue). Also label real interruption states before live use.")
+                Text("3. Use real before/pending/after transfer examples. Label Processing and the proof chosen in Workflows: \(verificationTarget.rawValue). Strict recognition also requires the general gameplay and interruption labels.")
                 Text("4. Save calibration → capture fresh examples → Detect only → inspect matches/OCR → confirm review on Dashboard. After Start, focus the game during the countdown.")
                 Text("Jewel banking transfers jewels already in inventory. Add Helper looting, skills, monitoring and recovery after this workflow works.")
                     .foregroundStyle(.secondary)
@@ -146,6 +146,9 @@ struct CalibrationView: View {
                     }
                 }
                 Text("Current options: \(configuration.mode.title) • jewel banking \(settings.bankingEnabled ? "enabled" : "disabled"). Change options on Dashboard / Workflows to update this checklist.")
+                Text(configuration.strictGameplayRecognition
+                     ? "Strict recognition: normalGameplay and interruption labels are required."
+                     : "Relaxed recognition: normalGameplay and general interruption labels are optional. Existing interruption labels still stop input when they match.")
                 DisclosureGroup("Required before Start: \(requiredRoles.filter { hasLabel($0) }.count)/\(requiredRoles.count) targets labeled — select a row to label it") {
                     VStack(alignment: .leading, spacing: 10) {
                         ForEach(TargetRole.calibrationOrder.filter { requiredRoles.contains($0) }, id: \.self) { role in

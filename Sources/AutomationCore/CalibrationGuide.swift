@@ -6,7 +6,7 @@ public enum CalibrationTargetGroup: String, CaseIterable, Sendable {
     case bank = "3 · Open bank & transfer"
     case verification = "4 · Verify the transfer"
     case closing = "5 · Close bank & inventory"
-    case interruptions = "6 · Interruption states — required before live use"
+    case interruptions = "6 · Interruption states — strict recognition / recovery"
     case helper = "7 · Full mode: MU Helper"
     case monitoring = "8 · Full mode: monitoring & optional diagnostics"
     case recovery = "9 · Recovery & travel"
@@ -120,7 +120,7 @@ public extension TargetRole {
                          instruction: "Full mode with recovery enabled: mark a second, independent death-only feature, such as a genuine revive control. It must agree with deathIndicator across fresh frames. Do not reuse the same rectangle or low-health indicator.")
         case .destinationLandmark:
             return .init(title: "Farming destination reached", kind: "State", group: .recovery,
-                         instruction: "For recovery or route replay: at the real farming destination, mark a stable, unique location landmark or location text. Route completion requires this marker together with normalGameplay before Helper can restart.")
+                         instruction: "For recovery or route replay: at the real farming destination, mark a stable, unique location landmark or location text. Route completion requires this marker before Helper can restart; strict recognition also requires normalGameplay.")
         case .warpPanel:
             return .init(title: "Warp / travel dialog", kind: "State", group: .recovery,
                          instruction: "For routes that use travel: open the actual Warp dialog and mark its unique title or header. The app can recognize this state but does not choose a map or build a route automatically.")

@@ -2,7 +2,7 @@ import XCTest
 @testable import AutomationCore
 
 final class CalibrationGuideTests: XCTestCase {
-    func testBankingFirstRequirementsAreTheSameInBothModesWithOtherModulesOff() {
+    func testStrictBankingFirstRequirementsAreTheSameInBothModesWithOtherModulesOff() {
         let expected: Set<TargetRole> = [
             .gameViewport, .normalGameplay, .inventoryControl, .inventoryPanel,
             .bankControl, .bankTitle, .transferButton, .withdrawExcluded,
@@ -11,7 +11,19 @@ final class CalibrationGuideTests: XCTestCase {
             .loadingTransition, .deathIndicator, .respawnIndicator
         ]
         var config = AutomationConfiguration()
+        config.strictGameplayRecognition = true
         config.helperEnabled = false; config.skillsEnabled = false; config.recoveryEnabled = false
+        for mode in AutomationMode.allCases {
+            config.mode = mode
+            XCTAssertEqual(CalibrationRequirements.roles(configuration: config, settings: .init()), expected)
+        }
+    }
+
+    func testRelaxedBankingRequiresActionAndVerificationTargetsWithoutGeneralSceneLabels() {
+        let expected: Set<TargetRole> = [.gameViewport, .inventoryControl, .inventoryPanel, .bankControl,
+                                         .bankTitle, .transferButton, .withdrawExcluded, .processingIndicator,
+                                         .transferSuccess, .bankClose, .inventoryClose]
+        var config = AutomationConfiguration(); config.helperEnabled = false
         for mode in AutomationMode.allCases {
             config.mode = mode
             XCTAssertEqual(CalibrationRequirements.roles(configuration: config, settings: .init()), expected)

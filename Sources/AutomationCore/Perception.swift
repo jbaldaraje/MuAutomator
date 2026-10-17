@@ -76,4 +76,14 @@ public struct Observation: Sendable {
     public var blocksInput: Bool {
         [.unknown, .disconnected, .loginScreen, .characterSelection, .browserLoading, .loadingTransition, .possibleDeath, .respawnScreen].contains(state)
     }
+
+    /// Relaxed recognition trusts a verified action target when the general
+    /// gameplay classifier is unknown. Explicit interruption evidence still wins.
+    public func permitsInput(strictGameplayRecognition: Bool, allowRespawn: Bool = false) -> Bool {
+        if strictGameplayRecognition { return !blocksInput || (allowRespawn && state == .respawnScreen) }
+        let interruptions: [TargetRole] = [.disconnected, .loginScreen, .characterSelection,
+                                           .browserLoading, .loadingTransition, .deathIndicator]
+        guard !interruptions.contains(where: has) else { return false }
+        return allowRespawn || !has(.respawnIndicator)
+    }
 }

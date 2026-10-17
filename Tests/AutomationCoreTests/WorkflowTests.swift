@@ -64,6 +64,71 @@ final class WorkflowTests: XCTestCase {
         XCTAssertEqual(io.actions, [.click(.inventoryControl), .click(.bankControl), .click(.transferButton), .click(.bankClose), .click(.inventoryClose)])
     }
 
+    @MainActor func testRelaxedBankingCompletesWithoutNormalGameplayIncludingUnknownClosure() async throws {
+        let io = FakeIO()
+        configureBankingWithoutGameplay(io)
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: .init(), io: io)
+        try await finish(runner)
+        XCTAssertEqual(runner.stage, .completed)
+        XCTAssertEqual(io.actions, [.click(.inventoryControl), .click(.bankControl), .click(.transferButton), .click(.bankClose), .click(.inventoryClose)])
+        XCTAssertEqual(runner.lastObservation?.state, .unknown, "Do not fabricate a gameplay match")
+    }
+
+    @MainActor func testStrictRecognitionStillRejectsMissingGameplayBeforeInventoryClick() async throws {
+        let io = FakeIO(); io.frames = [[.inventoryControl]]
+        var config = AutomationConfiguration(); config.dryRun = false; config.strictGameplayRecognition = true
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: .init(), io: io)
+        try await finish(runner)
+        XCTAssertEqual(runner.stage, .waitingForManualIntervention)
+        XCTAssertTrue(io.actions.isEmpty)
+    }
+
+    @MainActor func testRelaxedRecognitionStillStopsOnExplicitInterruptionMatches() async throws {
+        for interruption: TargetRole in [.disconnected, .loginScreen, .characterSelection, .browserLoading,
+                                         .loadingTransition, .deathIndicator, .respawnIndicator] {
+            let io = FakeIO(); io.frames = [[.inventoryControl, interruption]]
+            var config = AutomationConfiguration(); config.dryRun = false
+            let runner = AutomationCoordinator()
+            try runner.start(configuration: config, settings: .init(), io: io)
+            try await finish(runner)
+            XCTAssertEqual(runner.stage, .waitingForManualIntervention, interruption.rawValue)
+            XCTAssertTrue(io.actions.isEmpty, interruption.rawValue)
+        }
+    }
+
+    @MainActor func testRelaxedFullModeKeepsMonitoringAfterBankingWithoutGameplayLabel() async throws {
+        let io = FakeIO(); configureBankingWithoutGameplay(io)
+        var config = AutomationConfiguration(); config.dryRun = false
+        config.mode = .fullAutomation; config.helperEnabled = false
+        var settings = WorkflowSettings(); settings.pollSeconds = 0.01; settings.inventoryMonitoringEnabled = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await waitUntil { runner.stage == .farming }
+        try await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertTrue(runner.active)
+        XCTAssertEqual(runner.lastObservation?.state, .unknown)
+        runner.stop(); try await finish(runner)
+        XCTAssertEqual(runner.stage, .cancelled)
+        XCTAssertEqual(io.actions.count, 5)
+    }
+
+    @MainActor private func configureBankingWithoutGameplay(_ io: FakeIO) {
+        io.frames = [[.inventoryControl]]
+        io.onAction = { action in
+            switch action {
+            case .click(.inventoryControl): io.frames = [[.inventoryPanel, .bankControl, .inventoryClose]]
+            case .click(.bankControl): io.frames = [[.inventoryPanel, .bankTitle, .transferButton, .bankClose]]
+            case .click(.transferButton): io.frames = [[.inventoryPanel, .bankTitle, .bankClose, .transferSuccess]]
+            case .click(.bankClose): io.frames = [[.inventoryPanel, .inventoryClose]]
+            case .click(.inventoryClose): io.frames = [[]]
+            default: break
+            }
+        }
+    }
+
     @MainActor func testUnverifiedTransferNeverRepeats() async throws {
         let io = FakeIO()
         io.frames = [[.inventoryPanel, .bankTitle, .transferButton]]

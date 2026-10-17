@@ -11,10 +11,12 @@ final class MacWorkflowIO: WorkflowIO {
     private var lastObservation: Observation?
     private var binding: BrowserWindowBinding?
     private let aspect: Double
+    private let strictGameplayRecognition: Bool
 
-    init(window: SCWindow, profile: CalibrationProfile) throws {
+    init(window: SCWindow, profile: CalibrationProfile, strictGameplayRecognition: Bool = false) throws {
         try profile.validate()
         self.window = window; self.currentWindow = window; self.profile = profile
+        self.strictGameplayRecognition = strictGameplayRecognition
         aspect = Double(window.frame.width / window.frame.height)
         if let calibrated = profile.windowAspectRatio, abs(calibrated - aspect) > 0.005 {
             throw WorkflowFailure.prerequisite("Window aspect ratio differs from calibration; calibrate again")
@@ -144,7 +146,7 @@ final class MacWorkflowIO: WorkflowIO {
         guard let observation = lastObservation, abs(observation.timestamp.timeIntervalSinceNow) < 2 else {
             throw WorkflowFailure.unsafe("Input requires fresh visual evidence")
         }
-        guard !observation.blocksInput || observation.state == .respawnScreen else {
+        guard observation.permitsInput(strictGameplayRecognition: strictGameplayRecognition, allowRespawn: true) else {
             throw WorkflowFailure.unsafe("Input blocked by \(observation.state.rawValue)")
         }
         let source = CGEventSource(stateID: .hidSystemState)
@@ -160,7 +162,9 @@ final class MacWorkflowIO: WorkflowIO {
                       y: target.region.y + target.region.height / 2, source: source)
         case .point(let x, let y): try click(x: x, y: y, source: source)
         case .key(let code):
-            guard code < 128, !observation.blocksInput else { throw WorkflowFailure.unsafe("Unsafe keyboard event") }
+            guard code < 128, observation.permitsInput(strictGameplayRecognition: strictGameplayRecognition) else {
+                throw WorkflowFailure.unsafe("Unsafe keyboard event")
+            }
             guard let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true),
                   let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false) else {
                 throw WorkflowFailure.unsafe("Could not create keyboard events")
