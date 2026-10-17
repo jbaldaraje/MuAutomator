@@ -22,20 +22,29 @@ struct CalibrationView: View {
                     Button("Allow capture / Refresh windows") {
                         Task { await capture.refresh(requestPermission: true) }
                     }
+                    Button("Open Screen Recording settings") { capture.openScreenRecordingSettings() }
+                    if capture.busy { ProgressView().controlSize(.small) }
+                }.disabled(capture.busy)
+                VStack(alignment: .leading, spacing: 8) {
                     Picker("Window", selection: Binding(get: { capture.selectedID }, set: { capture.select($0) })) {
                         Text("Select a window").tag(Optional<CGWindowID>.none)
                         ForEach(capture.windows, id: \.windowID) { window in
                             Text("\(window.owningApplication?.applicationName ?? "App"): \(window.title ?? "Untitled") [\(window.windowID)]")
                                 .tag(Optional(window.windowID))
                         }
+                    }.pickerStyle(.menu).frame(maxWidth: .infinity, alignment: .leading)
+                    HStack {
+                        Button("Capture snapshot") { Task { await capture.capture() } }
+                            .disabled(capture.selectedID == nil)
+                        Button(capture.previewEnabled ? "Freeze preview" : "Live preview") {
+                            if capture.previewEnabled { capture.stopPreview() } else { capture.startPreview() }
+                        }.disabled(capture.selectedID == nil)
                     }
-                    Button("Capture snapshot") { Task { await capture.capture() } }
-                        .disabled(capture.selectedID == nil)
-                    Button(capture.previewEnabled ? "Freeze preview" : "Live preview") {
-                        if capture.previewEnabled { capture.stopPreview() } else { capture.startPreview() }
-                    }.disabled(capture.selectedID == nil)
                 }.disabled(capture.busy)
                 Text(capture.message).font(.callout).textSelection(.enabled)
+                if !capture.discoveryDetails.isEmpty {
+                    Text(capture.discoveryDetails).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                }
                 if let date = capture.capturedAt {
                     Text("Frame: \(date.formatted()) • \(capture.previewEnabled ? "preview updating" : "frozen snapshot")")
                         .font(.caption).foregroundStyle(.secondary)
