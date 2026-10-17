@@ -1,6 +1,6 @@
 # Prompt audit and completion status
 
-The implementation is **not accepted as complete** against the supplied definition of done. 35 portable XCTest tests passed with Swift 6.0.3 in the pinned official Docker image; macOS compilation, permission behavior, capture alignment, live input and actual-game outcomes have not been validated. Five macOS adapter tests are present but remain unrun. Apple-framework sources passed Swift syntax parsing; Xcode project OpenStep syntax, scheme XML, Info.plist, source membership and shell syntax were checked. These are not macOS compilation. No tests were run on the user's Mac.
+The implementation is **not accepted as complete** against the supplied definition of done. 35 portable XCTest tests passed with Swift 6.0.3 in the pinned official Docker image; macOS compilation, permission behavior, capture alignment, live input and actual-game outcomes have not been validated here. Eight macOS adapter tests are present but remain unrun here, including three window-close lifecycle checks. Apple-framework sources passed Swift syntax parsing; Xcode project OpenStep syntax, scheme XML, Info.plist, source membership and shell syntax were checked. These are not macOS compilation. The user supplied a macOS 26.0 hang sample showing a native SwiftUI tab reinsertion/accessibility dependency cycle. The native tab container has been replaced with selected-screen navigation; the workaround still needs local reproduction testing.
 
 | Prompt area | Source implemented | Evidence / remaining gate |
 | --- | --- | --- |
