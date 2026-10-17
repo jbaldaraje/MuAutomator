@@ -5,6 +5,19 @@ import Vision
 import AutomationCore
 
 final class VisionAdapterTests: XCTestCase {
+    func testRecoveryPhraseIsReadEvenWhenLiveOptionalOCRIsDisabled() throws {
+        let frame = try image("bank")
+        let region = try AutomationCore.NormalizedRegion(x: 238.0/640, y: 154.0/412, width: 164.0/640, height: 20.0/412)
+        let template = try XCTUnwrap(VisionService.gray(try XCTUnwrap(VisionService.crop(frame, region: region))))
+        var profile = CalibrationProfile()
+        profile.targets = [.init(role: .deathIndicator, region: region, template: template,
+                                 expectedText: "A DEATH PHRASE NOT IN THIS IMAGE")]
+        let result = try VisionService.detect(image: frame, profile: profile, timestamp: Date(),
+                                             strictRecognition: false, includeOCRDiagnostics: false)
+        XCTAssertNotNil(result.text[.deathIndicator])
+        XCTAssertFalse(result.has(.deathIndicator), "An unchanged image must not substitute for a missing death phrase")
+    }
+
     func testRelaxedSavedImageEvidenceIsNotBlockedByOldOCRPhrase() throws {
         let frame = try image("bank")
         let region = try AutomationCore.NormalizedRegion(x: 238.0/640, y: 154.0/412, width: 164.0/640, height: 20.0/412)

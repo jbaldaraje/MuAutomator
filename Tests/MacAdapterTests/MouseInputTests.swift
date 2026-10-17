@@ -4,6 +4,25 @@ import CoreGraphics
 import AutomationCore
 
 final class MouseInputTests: XCTestCase {
+    @MainActor func testInterruptedRecordedKeyHoldReleasesKey() async {
+        var events: [CGEventType] = []
+        do {
+            try await MacMouseInput.key(code: 12, source: nil, post: { events.append($0.type) },
+                                       whileHeld: { throw WorkflowFailure.unsafe("Focus lost") }, check: {})
+            XCTFail("Expected interrupted hold")
+        } catch { XCTAssertEqual(events, [.keyDown, .keyUp]) }
+    }
+
+    @MainActor func testInterruptedRecordedMouseHoldReleasesButton() async {
+        var events: [CGEventType] = []
+        do {
+            try await MacMouseInput.click(at: CGPoint(x: 100, y: 100), source: nil, settleNanoseconds: 0,
+                                         post: { events.append($0.type) },
+                                         whileHeld: { throw WorkflowFailure.unsafe("Focus lost") }, check: {})
+            XCTFail("Expected interrupted hold")
+        } catch { XCTAssertEqual(events, [.mouseMoved, .leftMouseDown, .leftMouseUp]) }
+    }
+
     @MainActor func testMovePrecedesPressAndReleaseAtSameGlobalPoint() async throws {
         let point = CGPoint(x: -350.5, y: 127.25)
         var events: [CGEvent] = []

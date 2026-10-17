@@ -11,6 +11,8 @@ public final class AutomationCoordinator {
     public var onChange: (() -> Void)?
     private var task: Task<Void, Never>?
     private var paused = false
+    private var pauseStarted: Date?
+    private var pausedSeconds = 0.0
     private var started = Date()
     private var deadline = Date()
     private var settings = WorkflowSettings()
@@ -34,18 +36,26 @@ public final class AutomationCoordinator {
         guard routeTest || configuration.mode == .fullAutomation || settings.bankingEnabled else {
             throw WorkflowFailure.prerequisite("Enable jewel banking for jewels-only mode.")
         }
+        if !routeTest, settings.bankingEnabled, settings.bankingInputMode == .recordedInput {
+            guard let recording = settings.bankingRecording, !recording.steps.isEmpty else {
+                throw WorkflowFailure.prerequisite("Record the jewel workflow first")
+            }
+        }
         try io.checkSafety()
         self.io = io; self.config = configuration; self.settings = settings
         self.routeTest = routeTest
         started = Date(); deadline = started.addingTimeInterval(settings.workflowTimeoutSeconds)
-        skillTimes = [:]; paused = false
+        skillTimes = [:]; paused = false; pauseStarted = nil; pausedSeconds = 0
         lastError = nil; lastVerifiedAction = nil
         transition(.initializing, "Workflow started: \(configuration.mode.title)")
         task = Task { [weak self] in
             guard let self else { return }
             do {
                 try await run()
-                transition(.completed, "Workflow completed with required visual checks")
+                let message = settings.bankingInputMode == .recordedInput && configuration.mode == .jewelsOnly
+                    ? "Recorded inputs finished; jewel transfer result was not visually verified"
+                    : "Workflow completed with required visual checks"
+                transition(.completed, message)
             } catch is CancellationError {
                 transition(.cancelled, "Cancelled; no future input will be scheduled")
             } catch {
@@ -58,13 +68,14 @@ public final class AutomationCoordinator {
 
     public func pause() {
         guard task != nil, !paused else { return }
-        paused = true; resumeStage = stage
+        paused = true; pauseStarted = Date(); resumeStage = stage
         transition(.paused, "Paused by user")
     }
     public func resume() throws {
         guard paused, let io else { throw CoordinatorError.invalidTransition }
         try io.checkSafety()
-        paused = false
+        if let pauseStarted { pausedSeconds += Date().timeIntervalSince(pauseStarted) }
+        pauseStarted = nil; paused = false
         transition(resumeStage, "Resumed; next action requires fresh visual evidence")
     }
     public func stop() {
@@ -209,6 +220,15 @@ public final class AutomationCoordinator {
     }
 
     private func bank() async throws {
+        if settings.bankingInputMode == .recordedInput {
+            guard let recording = settings.bankingRecording else {
+                throw WorkflowFailure.prerequisite("Record the jewel workflow first")
+            }
+            transition(.preparingInventory, "Replaying recorded jewel inputs once; no inventory/bank image labels required")
+            try await playback(recording, allowRespawn: false)
+            transition(stage, "Recorded jewel inputs finished; transfer result not verified. No automatic retry.")
+            return
+        }
         transition(.preparingInventory, "Checking inventory")
         var frame = try await observe()
         if !frame.has(.inventoryPanel) {
@@ -299,7 +319,7 @@ public final class AutomationCoordinator {
     }
 
     private func executeRoute(requireValidated: Bool) async throws {
-        guard (!requireValidated || settings.route.validated), !settings.route.steps.isEmpty else {
+        guard (!requireValidated || settings.route.validated), settings.route.hasActions else {
             throw WorkflowFailure.prerequisite("Recovery route is empty or has not passed replay validation")
         }
         let routeDeadline = Date().addingTimeInterval(settings.routeTimeoutSeconds)
@@ -309,7 +329,10 @@ public final class AutomationCoordinator {
             return min(seconds, settings.actionTimeoutSeconds)
         }
         transition(.returningToSpot, "Executing \(settings.route.name) with verified checkpoints")
-        for step in settings.route.steps {
+        if let recording = settings.route.recording {
+            try await playback(recording, allowRespawn: true, deadline: routeDeadline)
+        }
+        for step in settings.route.recording == nil ? settings.route.steps : [] {
             _ = try await wait("route checkpoint \(step.before.rawValue)", timeout: remaining()) { $0.has(step.before) }
             // Respawn is allowed only for a calibrated route precondition; never for banking/skills.
             let frame = try await observe()
@@ -329,5 +352,45 @@ public final class AutomationCoordinator {
             $0.has(.destinationLandmark) && ($0.has(.normalGameplay)
                 || (!self.config.strictGameplayRecognition && $0.permitsInput(strictGameplayRecognition: false)))
         }
+    }
+
+    private func playback(_ recording: InputRecording, allowRespawn: Bool, deadline playbackDeadline: Date? = nil) async throws {
+        try recording.validate()
+        guard !recording.steps.isEmpty else { throw WorkflowFailure.prerequisite("Input recording is empty") }
+        func checkDeadline() throws {
+            if let playbackDeadline, Date() >= playbackDeadline { throw WorkflowFailure.timeout("Maximum route duration reached") }
+        }
+        func checkFrame() async throws {
+            try checkDeadline()
+            let frame = try await observe()
+            guard frame.permitsInput(strictGameplayRecognition: config.strictGameplayRecognition, allowRespawn: allowRespawn) else {
+                throw WorkflowFailure.unsafe("Recorded playback stopped by \(frame.state.rawValue)")
+            }
+        }
+        func delay(_ seconds: Double) async throws {
+            func activeTime() -> Double {
+                Date().timeIntervalSinceReferenceDate - pausedSeconds
+                    - (pauseStarted.map { Date().timeIntervalSince($0) } ?? 0)
+            }
+            var remaining = seconds
+            while remaining > 0 {
+                try await gate()
+                let start = activeTime()
+                try await checkFrame()
+                let sleep = min(max(0, remaining - (activeTime() - start)), settings.pollSeconds, 0.25)
+                if sleep > 0 { try await Task.sleep(nanoseconds: UInt64(sleep * 1_000_000_000)) }
+                remaining -= activeTime() - start
+            }
+        }
+        for (index, step) in recording.steps.enumerated() {
+            try await delay(step.delayBeforeSeconds)
+            try await checkFrame()
+            try await gate(); try checkDeadline()
+            guard let io else { throw CancellationError() }
+            try await io.performRecorded(step)
+            transition(stage, "Replayed input \(index + 1)/\(recording.steps.count): \(io.describeAction(step.action))")
+        }
+        try await delay(recording.tailDelaySeconds)
+        try await checkFrame()
     }
 }

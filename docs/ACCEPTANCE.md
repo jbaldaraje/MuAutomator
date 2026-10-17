@@ -34,6 +34,15 @@ Run these checks on macOS 14+ with Xcode and the actual selected Chrome game win
 - Cover the intended point with another window during the pointer-settle interval; the press must stop. Cancel after mouse-down and verify mouse-up is still delivered so the button is not left held. Run `MouseInputTests` on macOS; injected event tests do not validate actual browser dispatch.
 - Force an inventory-panel detection timeout. Confirm there is one click, no bank/transfer action, and the panel's raw score appears in the error and export. Frames must remain memory-only.
 
+## Recorded jewel inputs and return route
+
+- With no image labels, select a game window and record a jewel sequence. Wait for the start beep, click/key through the actual workflow with pauses, then release all controls and stop with Control–Option–Command–R. Verify that recording itself injects no input and excludes the stop chord.
+- Save/restart and compare recorded positions, holds, waits, dimensions and purpose. Finish an empty or unsupported/incomplete recording and confirm the previous saved sequence is retained. Modifiers, drags and simultaneous controls must produce an explanation rather than a misleading recording.
+- Replay from the same starting state and size with the physical pointer elsewhere. Confirm exact input order and correct targets. Confirm mouse/key release on cancellation or focus loss during a hold. A resized window must be rejected; moving the window between runs must preserve relative targeting.
+- In recorded jewel mode, Start must not demand inventory/bank images or Detect only review. The final status must describe input playback completion and must not claim verified transfer success. Pause must stop future inputs, and death/disconnect evidence during a saved wait must prevent the next input.
+- Record a return route. Configure positive/negative OCR examples for deathIndicator, deathConfirmation, respawnIndicator and destinationLandmark. In relaxed live detection, a saved matching image must not override an absent recovery OCR phrase. Test confirmed death → stable spawn → recorded inputs → verified destination without individual step image labels. Missing destination or route timeout must stop before Helper restarts.
+- Retest legacy image banking and checkpoint routes. Their saved settings and verification behavior must remain intact. Run the new native Vision/held-input tests; Linux tests cannot exercise the global event monitor or real browser input dispatch.
+
 ## Jewels only
 
 - Begin with known eligible jewels and capture before-state evidence. Calibrate either a real new-success signal or a reliable numeric count/balance region. Select the matching verification mode and count format; verify OCR against known values. If no reliable signal exists, keep live banking blocked.

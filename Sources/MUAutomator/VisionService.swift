@@ -62,14 +62,16 @@ enum VisionService {
             }
             let expected = target.expectedText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let numeric = target.role.isNumericEvidence
-            let needsOCR = numeric || (!expected.isEmpty && (strictRecognition || score == nil || includeOCRDiagnostics))
+            let recoveryOCR = target.role.isRecoveryEvidence && !expected.isEmpty
+            let needsOCR = numeric || (!expected.isEmpty && (strictRecognition || recoveryOCR || score == nil || includeOCRDiagnostics))
             if needsOCR {
                 let candidates = try recognize(cropped)
                 let text = candidates.map(\.text).joined(separator: " ")
                 texts[target.role] = text
                 let ocrScore = numeric ? (candidates.map(\.confidence).min() ?? 0)
                     : AutomationCore.OCRTextMatcher.confidence(for: expected, in: candidates)
-                score = AutomationCore.TargetRecognition.score(template: score, ocr: ocrScore, numeric: numeric, strict: strictRecognition)
+                score = AutomationCore.TargetRecognition.score(template: score, ocr: ocrScore, numeric: numeric,
+                                                               strict: strictRecognition, preferOCR: recoveryOCR)
             }
             if let score { scores[target.role] = score }
             if let score, score >= target.threshold { matches[target.role] = score }

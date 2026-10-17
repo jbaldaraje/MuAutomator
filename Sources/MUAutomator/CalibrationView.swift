@@ -144,10 +144,15 @@ struct CalibrationView: View {
     private var calibrationPlan: some View {
         GroupBox("Calibration plan — jewel banking first") {
             VStack(alignment: .leading, spacing: 8) {
+                if settings.bankingInputMode == .recordedInput {
+                    Text("Recorded inputs are selected. Select your game window here, then use Record inputs → Jewel workflow. Inventory/bank button images and panel labels are not needed for recorded playback.")
+                    Text("For recovery in full mode, keep OCR labels for deathIndicator, deathConfirmation, respawnIndicator and destinationLandmark. Record Return to spot for the movement sequence. Enabled Helper/skill modules can still require their own labels.")
+                } else {
                 Text("1. Select the active open.mu window → Capture snapshot → freeze preview → label game area and the inventory button. The normal-play label is optional in relaxed recognition.")
                 Text("2. Open inventory manually → recapture → label inventory, its close button and the bank button. Open the bank → recapture → label bank title, Transfer, excluded Withdraw and bank close.")
                 Text("3. Use real before/pending/after transfer examples. Label Processing and the proof chosen in Workflows: \(verificationTarget.rawValue). Strict recognition also requires the general gameplay and interruption labels.")
                 Text("4. Save calibration → capture fresh examples → Detect only → inspect matches/OCR → confirm review on Dashboard. After Start, focus the game during the countdown.")
+                }
                 Text("Jewel banking transfers jewels already in inventory. Add Helper looting, skills, monitoring and recovery after this workflow works.")
                     .foregroundStyle(.secondary)
                 if configuration.mode == .fullAutomation {
@@ -200,7 +205,9 @@ struct CalibrationView: View {
                 Text(guide.group.rawValue).font(.caption).foregroundStyle(.secondary)
                 Text(guide.instruction)
                 if !configuration.strictGameplayRecognition && !capture.role.isNumericEvidence {
-                    Text("Relaxed detection uses the saved image when available; an optional OCR phrase is diagnostic. OCR-only targets still use their phrase.")
+                    Text(capture.role.isRecoveryEvidence
+                         ? "Death, spawn, destination and route evidence use the OCR phrase when configured, including in relaxed mode. Leave it blank to use the saved image."
+                         : "Relaxed detection uses the saved image when available; an optional OCR phrase is diagnostic. OCR-only targets still use their phrase.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if !configuration.strictGameplayRecognition && capture.role.isClickControl {

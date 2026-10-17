@@ -8,6 +8,7 @@ private final class FakeIO: WorkflowIO {
     var unsafe = false
     var texts: [TargetRole: String] = [:]
     var scores: [TargetRole: Double] = [:]
+    var recordedSteps: [RecordedInputStep] = []
     var configuredTargets: Set<TargetRole> = []
     var onAction: ((GameAction) -> Void)?
     func checkSafety() throws {
@@ -23,9 +24,139 @@ private final class FakeIO: WorkflowIO {
         try Task.checkCancellation(); try checkSafety()
         actions.append(action); onAction?(action)
     }
+    func performRecorded(_ step: RecordedInputStep) async throws {
+        recordedSteps.append(step)
+        try await perform(step.action)
+    }
 }
 
 final class WorkflowTests: XCTestCase {
+    private func recording(_ actions: [GameAction]) -> InputRecording {
+        var value = InputRecording(windowWidth: 1000, windowHeight: 800)
+        value.steps = actions.map { .init(action: $0, holdSeconds: 0.1) }
+        return value
+    }
+
+    @MainActor func testRecordedJewelsReplayExactInputsWithoutImageTargetsOrFalseTransferSuccess() async throws {
+        let io = FakeIO(); io.frames = [[]]
+        let actions: [GameAction] = [.point(x: 0.15, y: 0.8), .key(12), .point(x: 0.6, y: 0.4)]
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput
+        settings.bankingRecording = recording(actions)
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await finish(runner)
+        XCTAssertEqual(runner.stage, .completed)
+        XCTAssertEqual(io.actions, actions)
+        XCTAssertEqual(io.recordedSteps, settings.bankingRecording?.steps)
+        XCTAssertNil(runner.lastVerifiedAction)
+        XCTAssertTrue(runner.events.last?.message.contains("not visually verified") == true)
+    }
+
+    @MainActor func testRecordedWaitAndTailDelayAreHonored() async throws {
+        let io = FakeIO(); io.frames = [[]]
+        var times: [Date] = []; io.onAction = { _ in times.append(Date()) }
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput; settings.pollSeconds = 0.01
+        settings.bankingRecording = recording([.key(12), .key(13)])
+        settings.bankingRecording?.steps[1].delayBeforeSeconds = 0.08
+        settings.bankingRecording?.tailDelaySeconds = 0.08
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await finish(runner)
+        XCTAssertEqual(times.count, 2)
+        if times.count == 2 {
+            XCTAssertGreaterThanOrEqual(times[1].timeIntervalSince(times[0]), 0.07)
+            XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(times[1]), 0.07)
+        }
+    }
+
+    @MainActor func testRecordedPlaybackPauseAndCancellationPreventPendingInput() async throws {
+        let io = FakeIO(); io.frames = [[]]
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput; settings.pollSeconds = 0.01
+        settings.bankingRecording = recording([.key(12)])
+        settings.bankingRecording?.steps[0].delayBeforeSeconds = 0.1
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        runner.pause()
+        try await Task.sleep(nanoseconds: 130_000_000)
+        XCTAssertTrue(io.actions.isEmpty)
+        try runner.resume()
+        runner.stop()
+        try await finish(runner)
+        XCTAssertTrue(io.actions.isEmpty)
+        XCTAssertEqual(runner.stage, .cancelled)
+    }
+
+    @MainActor func testDeathDuringRecordedWaitStopsBeforeNextInput() async throws {
+        let io = FakeIO(); io.frames = [[]]
+        io.onAction = { _ in io.frames = [[.deathIndicator]] }
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput
+        settings.bankingRecording = recording([.key(12), .key(13)])
+        settings.bankingRecording?.steps[1].delayBeforeSeconds = 0.1
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await finish(runner)
+        XCTAssertEqual(io.actions, [.key(12)])
+        XCTAssertEqual(runner.stage, .waitingForManualIntervention)
+    }
+
+    @MainActor func testRecordedRouteRunsAfterSpawnAndChecksDestinationWithoutPerStepLabels() async throws {
+        let io = FakeIO(); io.frames = [[.respawnIndicator]]
+        io.onAction = { _ in io.frames = [[.destinationLandmark]] }
+        var settings = WorkflowSettings(); settings.bankingEnabled = false; settings.pollSeconds = 0.01
+        settings.route.recording = recording([.key(12), .point(x: 0.3, y: 0.4)])
+        settings.route.validated = true
+        var config = AutomationConfiguration(); config.dryRun = false; config.mode = .fullAutomation
+        config.helperEnabled = false; config.recoveryEnabled = true
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        let until = Date().addingTimeInterval(1)
+        while runner.lastVerifiedAction != "farming destination" && runner.active && Date() < until {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(runner.lastVerifiedAction, "farming destination")
+        XCTAssertEqual(io.actions, settings.route.recording?.steps.map(\.action))
+        runner.stop(); try await finish(runner)
+    }
+
+    @MainActor func testRecordedRouteMissingDestinationStopsWithoutHelperRestart() async throws {
+        let io = FakeIO(); io.frames = [[.respawnIndicator]]
+        io.onAction = { _ in io.frames = [[]] }
+        var settings = WorkflowSettings(); settings.bankingEnabled = false; settings.pollSeconds = 0.01
+        settings.actionTimeoutSeconds = 0.1
+        settings.route.recording = recording([.key(12)])
+        var config = AutomationConfiguration(); config.dryRun = false; config.mode = .fullAutomation
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io, routeTest: true)
+        try await finish(runner)
+        XCTAssertEqual(io.actions, [.key(12)])
+        XCTAssertEqual(runner.stage, .waitingForManualIntervention)
+        XCTAssertNil(runner.lastVerifiedAction)
+    }
+
+    @MainActor func testMissingJewelRecordingCannotStart() async throws {
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput
+        var config = AutomationConfiguration(); config.dryRun = false
+        XCTAssertThrowsError(try AutomationCoordinator().start(configuration: config, settings: settings, io: FakeIO()))
+    }
+
+    @MainActor func testRecordedRouteTimeoutStopsDuringSavedWait() async throws {
+        let io = FakeIO(); io.frames = [[.respawnIndicator]]
+        var settings = WorkflowSettings(); settings.bankingEnabled = false; settings.pollSeconds = 0.01
+        settings.routeTimeoutSeconds = 0.1
+        settings.route.recording = recording([.key(12)])
+        settings.route.recording?.steps[0].delayBeforeSeconds = 0.3
+        var config = AutomationConfiguration(); config.dryRun = false; config.mode = .fullAutomation
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io, routeTest: true)
+        try await finish(runner)
+        XCTAssertTrue(io.actions.isEmpty)
+        XCTAssertTrue(runner.lastError?.contains("Maximum route duration") == true)
+    }
+
     @MainActor func testMissedInventoryClickReportsPanelScoreWithoutOpeningBankOrRepeatingClick() async throws {
         let io = FakeIO(); io.frames = [[]]; io.configuredTargets = [.inventoryControl]
         io.scores = [.inventoryPanel: 0.42]

@@ -22,6 +22,11 @@ public enum TargetRole: String, Codable, CaseIterable, Sendable {
     }
 
     public var isNumericEvidence: Bool { self == .inventoryCountText || self == .bankBalanceText }
+    public var isRecoveryEvidence: Bool {
+        [.deathIndicator, .deathConfirmation, .respawnIndicator, .destinationLandmark,
+         .routeCheckpoint, .routeCheckpoint2, .routeCheckpoint3, .routeCheckpoint4, .routeCheckpoint5,
+         .routeCheckpoint6, .routeCheckpoint7, .routeCheckpoint8, .routeCheckpoint9, .routeCheckpoint10].contains(self)
+    }
 }
 
 /// Window-relative, top-left origin. Independent of Retina pixel density.

@@ -40,16 +40,24 @@ final class SessionModel: ObservableObject {
         } catch { self.error = "Settings load failed: \(error.localizedDescription). Review before saving." }
         runner.onChange = { [weak self] in self?.objectWillChange.send() }
         recorder.onChange = { [weak self] in self?.objectWillChange.send() }
-        recorder.onRecorded = { [weak self] steps in
-            self?.settings.route.steps = steps
-            self?.settings.route.validated = false
+        recorder.onRecorded = { [weak self] purpose, recording in
+            guard let self else { return }
+            if purpose == .jewelBanking {
+                settings.bankingRecording = recording
+                settings.bankingInputMode = .recordedInput
+            } else {
+                settings.route.recording = recording
+                settings.route.validated = false
+            }
         }
         globalStop = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
             if Self.isStop(event) { Task { @MainActor [weak self] in self?.stop() } }
+            else if Self.isRecordingStop(event) { Task { @MainActor [weak self] in self?.recorder.stop() } }
             else if Self.isPause(event) { Task { @MainActor [weak self] in self?.pauseFromHotkey() } }
         }
         localStop = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             if Self.isStop(event) { Task { @MainActor [weak self] in self?.stop() }; return nil }
+            if Self.isRecordingStop(event) { Task { @MainActor [weak self] in self?.recorder.stop() }; return nil }
             if Self.isPause(event) { Task { @MainActor [weak self] in self?.pauseOrResume() }; return nil }
             return event
         }
@@ -61,6 +69,9 @@ final class SessionModel: ObservableObject {
 
     nonisolated private static func isPause(_ event: NSEvent) -> Bool {
         event.keyCode == 35 && event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.control, .option, .command]
+    }
+    nonisolated private static func isRecordingStop(_ event: NSEvent) -> Bool {
+        event.keyCode == 15 && event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.control, .option, .command]
     }
 
     var locked: Bool { runner.active || arming || recorder.active }
@@ -94,6 +105,7 @@ final class SessionModel: ObservableObject {
     private func requiredTargets(routeTest: Bool = false) -> Set<TargetRole> {
         CalibrationRequirements.roles(configuration: configuration, settings: settings, routeTest: routeTest)
     }
+    var needsDetectionReview: Bool { !requiredTargets().isEmpty }
 
     func arm(routeTest: Bool = false) {
         guard !locked, !capture.busy else { return }
@@ -103,19 +115,29 @@ final class SessionModel: ObservableObject {
                 throw WorkflowFailure.prerequisite("Inspect the game and log, then acknowledge the unresolved previous attempt before starting a new workflow")
             }
             guard liveConsent, !configuration.dryRun else { throw WorkflowFailure.prerequisite("Enable live mode and explicitly allow game input") }
-            guard reviewed, reviewedData == (try fingerprint()) else { throw WorkflowFailure.prerequisite("Calibration or window changed. Repeat dry-run review") }
+            if !requiredTargets(routeTest: routeTest).isEmpty {
+                guard reviewed, reviewedData == (try fingerprint()) else { throw WorkflowFailure.prerequisite("Calibration or window changed. Repeat dry-run review") }
+            }
             guard let window = capture.windows.first(where: { $0.windowID == capture.selectedID }) else {
                 throw WorkflowFailure.prerequisite("Select the game window first")
             }
             try MacWorkflowIO.requireTargets(requiredTargets(routeTest: routeTest), in: capture.profile,
                                              strictGameplayRecognition: configuration.strictGameplayRecognition)
             if !routeTest && configuration.mode == .fullAutomation && configuration.recoveryEnabled {
-                guard settings.route.validated, !settings.route.steps.isEmpty else {
+                guard settings.route.validated, settings.route.hasActions else {
                     throw WorkflowFailure.prerequisite("Configure and manually validate the recovery route first")
                 }
             }
+            let recordings = [
+                !routeTest && settings.bankingEnabled && settings.bankingInputMode == .recordedInput ? settings.bankingRecording : nil,
+                routeTest || (configuration.mode == .fullAutomation && configuration.recoveryEnabled) ? settings.route.recording : nil
+            ].compactMap { $0 }
+            for recording in recordings where !recording.matchesWindow(width: window.frame.width, height: window.frame.height) {
+                throw WorkflowFailure.prerequisite("Restore the browser size used by the recording (\(Int(recording.windowWidth)) × \(Int(recording.windowHeight)) points), or record again")
+            }
             let io = try MacWorkflowIO(window: window, profile: capture.profile,
-                                       strictGameplayRecognition: configuration.strictGameplayRecognition)
+                                       strictGameplayRecognition: configuration.strictGameplayRecognition,
+                                       recordedWindow: recordings.first)
             configureDiagnostics(io)
             capture.stopPreview()
             save()
@@ -206,7 +228,7 @@ final class SessionModel: ObservableObject {
 
     func stop() {
         armTask?.cancel(); runner.stop(); liveConsent = false
-        recorder.stop()
+        recorder.stop(saveRecording: false)
         objectWillChange.send()
     }
 

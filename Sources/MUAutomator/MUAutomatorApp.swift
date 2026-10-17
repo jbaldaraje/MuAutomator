@@ -19,7 +19,7 @@ private enum AppScreen: String, CaseIterable {
     case dashboard = "Dashboard"
     case calibration = "Calibration"
     case workflows = "Workflows"
-    case recording = "Record route"
+    case recording = "Record inputs"
     case activity = "Activity"
 
     var symbol: String {
@@ -154,14 +154,16 @@ struct DashboardView: View {
                         Picker("Mode", selection: $model.configuration.mode) {
                             ForEach(AutomationMode.allCases, id: \.self) { Text($0.title).tag($0) }
                         }.pickerStyle(.segmented)
-                        Text(model.configuration.mode == .jewelsOnly
+                        Text(model.settings.bankingInputMode == .recordedInput
+                             ? "Replay your recorded clicks, key holds and timing. Jewel transfer is not verified by playback alone. OCR recovery remains available in full automation."
+                             : model.configuration.mode == .jewelsOnly
                              ? "Bank jewels already in inventory, verify the transfer, close panels, then stop."
                              : "Bank, activate enabled helper, monitor farming, and run enabled skills and recovery.")
                         Toggle("Dry run (use Detect only in Calibration)", isOn: $model.configuration.dryRun)
                         Toggle("Strict gameplay recognition (require normalGameplay)", isOn: $model.configuration.strictGameplayRecognition)
                         Text(model.configuration.strictGameplayRecognition
                              ? "Strict: general gameplay and interruption labels are required."
-                             : "Relaxed: click your saved control regions without button OCR/template or normalGameplay matches. Panel states, window focus, explicit interruptions and transfer results are still checked.")
+                             : "Relaxed: recorded playback uses saved inputs and timing. The image workflow uses saved control positions with panel/result checks. Configured interruptions and window focus are checked in both.")
                             .font(.caption).foregroundStyle(.secondary)
                         Toggle("I explicitly allow live mouse and keyboard input to my selected game window", isOn: $model.liveConsent)
                         if model.runner.stage == .waitingForManualIntervention {
@@ -178,8 +180,13 @@ struct DashboardView: View {
                         Text("Screen Recording: \(permissionLabel(permissions.screenRecordingAllowed)) • Accessibility: \(permissionLabel(permissions.accessibilityAllowed))")
                         Button("Request Accessibility for live input") { model.requestInputPermission() }
                             .disabled(model.locked)
-                        Button(model.reviewed ? "Reconfirm dry-run detection reviewed" : "Confirm I reviewed dry-run detection") { model.reviewDetection() }
-                            .disabled(model.locked)
+                        if model.needsDetectionReview {
+                            Button(model.reviewed ? "Reconfirm dry-run detection reviewed" : "Confirm I reviewed dry-run detection") { model.reviewDetection() }
+                                .disabled(model.locked)
+                        } else {
+                            Text("Recorded-input playback needs a saved recording and selected game window. Image calibration is optional; add OCR labels when enabling recovery.")
+                                .font(.caption)
+                        }
                         HStack {
                             Button("Start in 5 seconds") { model.arm() }.disabled(model.locked)
                             Button(model.runner.stage == .paused ? "Resume" : "Pause") { model.pauseOrResume() }
@@ -218,7 +225,9 @@ struct DashboardView: View {
                         }.padding(.top, 8)
                     }
                 }
-                Text("macOS adapters and actual gameplay still require local acceptance testing. Calibrate verification evidence using real before/after examples; a static bank title is not transfer success.")
+                Text(model.settings.bankingInputMode == .recordedInput
+                     ? "Recorded playback needs the same browser size, zoom and game layout. Set the game to the same starting state before running. OCR recovery requires real death, spawn and destination examples."
+                     : "macOS adapters and actual gameplay still require local acceptance testing. Calibrate verification evidence using real before/after examples; a static bank title is not transfer success.")
                     .foregroundStyle(.secondary)
             }.padding(24)
         }

@@ -123,8 +123,8 @@ public enum OCRTextMatcher {
 }
 
 public enum TargetRecognition {
-    public static func score(template: Double?, ocr: Double?, numeric: Bool, strict: Bool) -> Double? {
-        if numeric { return ocr }
+    public static func score(template: Double?, ocr: Double?, numeric: Bool, strict: Bool, preferOCR: Bool = false) -> Double? {
+        if numeric || (!strict && preferOCR) { return ocr }
         if !strict { return template ?? ocr }
         if let template, let ocr { return min(template, ocr) }
         return template ?? ocr

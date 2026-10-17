@@ -31,12 +31,16 @@ public struct RecoveryRoute: Codable, Sendable {
     public var name = "My farming route"
     public var steps: [RouteStep] = []
     public var validated = false
+    public var recording: InputRecording?
+    public var hasActions: Bool { !(recording?.steps.isEmpty ?? steps.isEmpty) }
     public init() {}
 }
 
 public struct WorkflowSettings: Codable, Sendable {
     public var schemaVersion = 1
     public var bankingEnabled = true
+    public var bankingInputMode: BankingInputMode = .visualWorkflow
+    public var bankingRecording: InputRecording?
     public var bankingVerification: BankingVerificationMode = .newSuccessIndicator
     public var countFormat: CountFormat = .digitsOnly
     public var inventoryMonitoringEnabled = true
@@ -54,7 +58,7 @@ public struct WorkflowSettings: Codable, Sendable {
     public init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, bankingEnabled, bankingVerification, countFormat, inventoryMonitoringEnabled, bankingCooldownSeconds
+        case schemaVersion, bankingEnabled, bankingInputMode, bankingRecording, bankingVerification, countFormat, inventoryMonitoringEnabled, bankingCooldownSeconds
         case actionTimeoutSeconds, workflowTimeoutSeconds, recoveryTimeoutSeconds, routeTimeoutSeconds
         case maximumRecoveries, pollSeconds, detectionRetries, skills, repeatSkills, route
     }
@@ -66,6 +70,8 @@ public struct WorkflowSettings: Codable, Sendable {
         }
         schemaVersion = try read(.schemaVersion, schemaVersion)
         bankingEnabled = try read(.bankingEnabled, bankingEnabled)
+        bankingInputMode = try read(.bankingInputMode, bankingInputMode)
+        bankingRecording = try values.decodeIfPresent(InputRecording.self, forKey: .bankingRecording)
         bankingVerification = try read(.bankingVerification, bankingVerification)
         countFormat = try read(.countFormat, countFormat)
         inventoryMonitoringEnabled = try read(.inventoryMonitoringEnabled, inventoryMonitoringEnabled)
@@ -83,6 +89,8 @@ public struct WorkflowSettings: Codable, Sendable {
     }
 
     public func validate() throws {
+        try bankingRecording?.validate()
+        try route.recording?.validate()
         guard schemaVersion == 1,
               actionTimeoutSeconds.isFinite, (0.1...120).contains(actionTimeoutSeconds),
               workflowTimeoutSeconds.isFinite, (1...86400).contains(workflowTimeoutSeconds),
@@ -143,9 +151,13 @@ public protocol WorkflowIO: AnyObject {
     func checkSafety() throws
     func hasCalibratedTarget(_ role: TargetRole) -> Bool
     func describeAction(_ action: GameAction) -> String
+    func performRecorded(_ step: RecordedInputStep) async throws
 }
 
 public extension WorkflowIO {
     func hasCalibratedTarget(_ role: TargetRole) -> Bool { false }
     func describeAction(_ action: GameAction) -> String { String(describing: action) }
+    func performRecorded(_ step: RecordedInputStep) async throws {
+        throw WorkflowFailure.prerequisite("This input adapter does not support recorded holds")
+    }
 }

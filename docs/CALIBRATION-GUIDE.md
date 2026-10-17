@@ -4,6 +4,14 @@ Get the **jewel-banking option** working first, then add the other full-automati
 
 For a banking-first test in **Full automation**, enable jewel banking in Workflows, turn off Helper, skill sequence and death recovery, and turn off “Monitor calibrated banking-trigger indicator.” The first bank transfer still runs; afterward full mode keeps monitoring gameplay until you press Stop. Enable the later modules only after their calibration and local tests are complete. The separate Jewels only mode uses the same bank routine and stops after banking, but changing modes is not necessary to follow this guide.
 
+## Record actions instead of labeling buttons
+
+Use **Record inputs → Jewel workflow** for the simplest banking setup. Select the game window, start recording, focus it and wait for the beep. Perform the whole deposit sequence yourself, release all controls, then stop with **Control–Option–Command–R**. Review waits/holds in Workflows and Save settings. Restore the same starting panel state before playback. Recorded inputs use real window-relative positions and timing; inventory/bank image targets are not required. Playback completion does not prove the jewels transferred. The original image workflow below remains available by selecting Calibrated image workflow in Workflows.
+
+For **Return to spot**, record movement from spawn to the farming location. Keep recovery OCR for `deathIndicator`, independent `deathConfirmation`, `respawnIndicator`, and `destinationLandmark`; these phrases are used even in relaxed mode. After stable spawn detection the app replays the route and waits for the destination label. Individual recorded inputs do not need before/after image checkpoints. Existing checkpoint routes are preserved. Enabled Helper or skill modules can still add visual requirements.
+
+Keep browser dimensions, zoom and layout consistent. Recording stores left clicks, one unmodified key/control at a time, holds and pauses, with no drags. Recording does not send input. Stop/Emergency Stop remains available during playback; pending inputs are not retried. These native input behaviors require local macOS acceptance testing.
+
 ## Work through these screens in order
 
 1. Open Chrome with `https://open.mu` as the active tab. Keep the window size and browser zoom consistent. In Calibration, grant Screen Recording and Accessibility, refresh windows, and select the game window. Window discovery needs no target labels.

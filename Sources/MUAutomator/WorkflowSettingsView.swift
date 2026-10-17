@@ -10,16 +10,27 @@ struct WorkflowSettingsView: View {
                 GroupBox("Jewel banking & inventory monitoring") {
                     VStack(alignment: .leading) {
                         Toggle("Enable jewel banking", isOn: $model.settings.bankingEnabled)
-                        Picker("Transfer verification", selection: $model.settings.bankingVerification) {
-                            ForEach(BankingVerificationMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                        Picker("Input method", selection: $model.settings.bankingInputMode) {
+                            ForEach(BankingInputMode.allCases, id: \.self) { Text($0.title).tag($0) }
                         }
-                        Picker("Numeric format", selection: $model.settings.countFormat) {
-                            ForEach(CountFormat.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                        if model.settings.bankingInputMode == .recordedInput {
+                            Text("Use Record inputs → Jewel workflow to capture your clicks, key holds and pauses. Playback does not require inventory/bank labels. It replays once; finishing the inputs does not verify a deposit.")
+                                .font(.caption)
+                            RecordedInputEditor(recording: $model.settings.bankingRecording)
+                        } else {
+                            Picker("Transfer verification", selection: $model.settings.bankingVerification) {
+                                ForEach(BankingVerificationMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                            }
+                            Picker("Numeric format", selection: $model.settings.countFormat) {
+                                ForEach(CountFormat.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                            }
+                            Text("Use a new success indicator or a calibrated reliable count change. Numeric regions must contain only one count in the selected format. Processing, unchanged counts and dialog closure are not success. Uncertain transfers are never clicked again automatically.")
+                                .font(.caption)
                         }
-                        Toggle("Monitor calibrated banking-trigger indicator", isOn: $model.settings.inventoryMonitoringEnabled)
+                        Toggle("Monitor calibrated banking-trigger indicator (full mode)", isOn: $model.settings.inventoryMonitoringEnabled)
                         numeric("Minimum time between banking attempts (seconds)", value: $model.settings.bankingCooldownSeconds)
-                        Text("Use a new success indicator or a calibrated reliable count change. Numeric regions must contain only one count in the selected format. Processing, unchanged counts and dialog closure are not success. Uncertain transfers are never clicked again automatically.")
-                            .font(.caption)
+                        Text("The optional bankingTrigger label can start another banking cycle in full mode. Turn the monitor off while testing the recording.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }.padding(8)
                 }
                 GroupBox("MU Helper & death recovery — full mode") {
@@ -96,42 +107,50 @@ struct RouteEditor: View {
         GroupBox("Return-to-spot route") {
             VStack(alignment: .leading, spacing: 10) {
                 TextField("Route name", text: $route.name)
-                Text("Configure checkpoint-gated clicks or captured points. No map, key, teleport or path is assumed. Each step must produce its expected visual checkpoint.").font(.caption)
-                ForEach($route.steps) { $step in
-                    VStack(alignment: .leading) {
-                        HStack {
-                            Picker("Before", selection: $step.before) { targets }
-                            Picker("After", selection: $step.after) { targets }
-                            Button("Remove") { route.steps.removeAll { $0.id == step.id }; route.validated = false }
-                            Button("↑") { moveStep(step.id, offset: -1) }
-                            Button("↓") { moveStep(step.id, offset: 1) }
-                        }
-                        Text("Action: \(String(describing: step.action))").font(.caption.monospaced())
-                        if case let .key(code) = step.action {
-                            TextField("Recorded key code", value: Binding(get: { code }, set: { step.action = .key($0) }), format: .number)
-                        }
-                        if case let .point(x, y) = step.action {
+                if route.recording != nil {
+                    Text("Replay your recorded return inputs and timing after OCR confirms spawn. Verify destinationLandmark at the end; individual input steps need no image checkpoints.")
+                        .font(.caption)
+                    RecordedInputEditor(recording: $route.recording)
+                } else {
+                    Text("Configure checkpoint-gated clicks or captured points. No map, key, teleport or path is assumed. Each step must produce its expected visual checkpoint.").font(.caption)
+                    ForEach($route.steps) { $step in
+                        VStack(alignment: .leading) {
                             HStack {
-                                Text("Recorded window-relative point")
-                                TextField("X", value: Binding(get: { x }, set: { step.action = .point(x: $0, y: y) }), format: .number)
-                                TextField("Y", value: Binding(get: { y }, set: { step.action = .point(x: x, y: $0) }), format: .number)
+                                Picker("Before", selection: $step.before) { targets }
+                                Picker("After", selection: $step.after) { targets }
+                                Button("Remove") { route.steps.removeAll { $0.id == step.id }; route.validated = false }
+                                Button("↑") { moveStep(step.id, offset: -1) }
+                                Button("↓") { moveStep(step.id, offset: 1) }
                             }
+                            Text("Action: \(String(describing: step.action))").font(.caption.monospaced())
+                            if case let .key(code) = step.action {
+                                TextField("Recorded key code", value: Binding(get: { code }, set: { step.action = .key($0) }), format: .number)
+                            }
+                            if case let .point(x, y) = step.action {
+                                HStack {
+                                    Text("Recorded window-relative point")
+                                    TextField("X", value: Binding(get: { x }, set: { step.action = .point(x: $0, y: y) }), format: .number)
+                                    TextField("Y", value: Binding(get: { y }, set: { step.action = .point(x: x, y: $0) }), format: .number)
+                                }
+                            }
+                            Picker("Click calibrated target", selection: Binding(get: {
+                                if case let .click(role) = step.action { return role }; return .routeCheckpoint
+                            }, set: { step.action = .click($0); route.validated = false })) { targets }
                         }
-                        Picker("Click calibrated target", selection: Binding(get: {
-                            if case let .click(role) = step.action { return role }; return .routeCheckpoint
-                        }, set: { step.action = .click($0); route.validated = false })) { targets }
+                    }
+                    Button("Add checkpoint click") {
+                        route.steps.append(.init(action: .click(.routeCheckpoint), before: .respawnIndicator, after: .destinationLandmark))
+                        route.validated = false
                     }
                 }
-                Button("Add checkpoint click") {
-                    route.steps.append(.init(action: .click(.routeCheckpoint), before: .respawnIndicator, after: .destinationLandmark))
-                    route.validated = false
-                }
-                Toggle("I manually replayed this route and verified every checkpoint", isOn: $route.validated)
+                Toggle(route.recording == nil ? "I manually replayed this route and verified every checkpoint"
+                       : "I tested the recording and verified arrival at the farming spot", isOn: $route.validated)
                 Text("Route recording and replay validation must be performed on your Mac. This checkbox records your confirmation; it does not run a route test.")
                     .font(.caption)
             }.padding(8)
         }
         .onChange(of: route.steps) { _, _ in route.validated = false }
+        .onChange(of: route.recording) { _, _ in route.validated = false }
     }
     private var targets: some View {
         ForEach(TargetRole.allCases.filter { $0 != .withdrawExcluded }, id: \.self) { Text($0.rawValue).tag($0) }
@@ -139,5 +158,43 @@ struct RouteEditor: View {
     private func moveStep(_ id: UUID, offset: Int) {
         guard let index = route.steps.firstIndex(where: { $0.id == id }), route.steps.indices.contains(index + offset) else { return }
         route.steps.swapAt(index, index + offset)
+    }
+}
+
+struct RecordedInputEditor: View {
+    @Binding var recording: InputRecording?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let value = recording {
+                Text("\(value.steps.count) recorded inputs • \(value.duration, specifier: "%.1f") seconds • window \(Int(value.windowWidth)) × \(Int(value.windowHeight)) points")
+                    .font(.caption)
+                ForEach(value.steps) { step in
+                    HStack {
+                        Text(String(describing: step.action)).font(.caption.monospaced())
+                        Spacer()
+                        Text("Wait")
+                        TextField("Wait seconds", value: Binding(get: {
+                            recording?.steps.first(where: { $0.id == step.id })?.delayBeforeSeconds ?? 0
+                        }, set: { setTiming(step.id, delay: $0) }), format: .number).frame(width: 65)
+                        Text("Hold")
+                        TextField("Hold seconds", value: Binding(get: {
+                            recording?.steps.first(where: { $0.id == step.id })?.holdSeconds ?? 0.05
+                        }, set: { setTiming(step.id, hold: $0) }), format: .number).frame(width: 65)
+                        Button("Remove") { recording?.steps.removeAll { $0.id == step.id } }
+                    }
+                }
+                HStack {
+                    Text("Wait after last input (seconds)")
+                    TextField("Final wait", value: Binding(get: { recording?.tailDelaySeconds ?? 0 },
+                                                         set: { recording?.tailDelaySeconds = $0 }), format: .number).frame(width: 70)
+                    Button("Remove recording", role: .destructive) { recording = nil }
+                }
+            } else { Text("No saved recording. Open Record inputs to create one.").foregroundStyle(.secondary) }
+        }
+    }
+    private func setTiming(_ id: UUID, delay: Double? = nil, hold: Double? = nil) {
+        guard let index = recording?.steps.firstIndex(where: { $0.id == id }) else { return }
+        if let delay { recording?.steps[index].delayBeforeSeconds = delay }
+        if let hold { recording?.steps[index].holdSeconds = hold }
     }
 }
