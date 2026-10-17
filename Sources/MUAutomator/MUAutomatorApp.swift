@@ -186,12 +186,38 @@ struct DashboardView: View {
                                 .disabled(!model.runner.active || model.arming)
                             Button("Save settings") { model.save() }.disabled(model.locked)
                         }
+                        Button("Test inventory click only (5 seconds)") { model.testInventoryClick() }
+                            .disabled(model.locked || capture.busy)
+                        Text("The click test sends one inventory-button click and captures the result. It does not open the bank or transfer jewels.")
+                            .font(.caption).foregroundStyle(.secondary)
                         Text("After Start/Resume, focus the game. Pause/resume: Control–Option–Command–P. Emergency Stop: Control–Option–Command–Escape. Delivered input cannot be retracted.")
                             .font(.caption)
                         Text("Last event: \(model.runner.events.last?.message ?? "none")").textSelection(.enabled)
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
                 }
                 if let error = model.error { Text(error).foregroundStyle(.orange).textSelection(.enabled) }
+                if !model.locked, let image = model.lastRunFrame {
+                    DisclosureGroup("Last click and captured game — inspect alignment") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(model.lastClick ?? "No click attempted").font(.caption.monospaced()).textSelection(.enabled)
+                            if let observation = model.lastRunObservation {
+                                ForEach(model.lastRunProfile.targets.filter { [.inventoryPanel, .bankTitle].contains($0.role) }) { target in
+                                    let score = observation.scores[target.role].map { String(format: "%.3f", $0) } ?? "unavailable"
+                                    Text("\(target.role.rawValue): \(observation.has(target.role) ? "matched" : "not matched") • score \(score), threshold \(target.threshold, specifier: "%.3f")")
+                                        .font(.caption.monospaced())
+                                }
+                            }
+                            if let before = model.beforeClickFrame {
+                                Text("Before the last click").font(.caption)
+                                Image(decorative: before, scale: 1).resizable().scaledToFit().frame(maxHeight: 320)
+                            }
+                            Text("Latest captured frame").font(.caption)
+                            Image(decorative: image, scale: 1).resizable().scaledToFit().frame(maxHeight: 420)
+                            Text("Frames stay in memory for this attempt; they are not written to the activity log. If the position is wrong, select inventoryControl in Calibration and use Set click from game cursor.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }.padding(.top, 8)
+                    }
+                }
                 Text("macOS adapters and actual gameplay still require local acceptance testing. Calibrate verification evidence using real before/after examples; a static bank title is not transfer success.")
                     .foregroundStyle(.secondary)
             }.padding(24)
@@ -222,6 +248,7 @@ struct ActivityLogView: View {
                     Text("\(event.timestamp.formatted()) • \(event.previous.rawValue) → \(event.stage.rawValue)").font(.caption)
                     Text(event.message)
                     Text("Evidence: \(event.observation?.matches.description ?? "none")").font(.caption.monospaced())
+                    Text("Raw scores: \(event.observation?.scores.description ?? "none")").font(.caption.monospaced())
                 }.textSelection(.enabled)
             }
         }.padding()

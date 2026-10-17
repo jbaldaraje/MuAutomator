@@ -27,6 +27,13 @@ Run these checks on macOS 14+ with Xcode and the actual selected Chrome game win
 - Label actual death and respawn examples; combat effects and low health alone must not initiate recovery.
 - Review Detect only output and scores with no input. Change any calibration/window selection and verify a new review is required.
 
+## Click alignment
+
+- Start with the physical pointer away from the inventory button. Run Dashboard's single inventory-click test, focus the selected game, and verify it clicks the saved button rather than the previous pointer location. Inspect before/after frames and the reported coordinates. This test must not open the bank or transfer jewels.
+- Set a cursor position on `inventoryControl`, save/reload, and verify only that control's click location changes; its image/OCR/threshold and other targets must stay unchanged. Clear the override to restore the rectangle center. Test Retina/non-Retina displays and a display with negative global coordinates.
+- Cover the intended point with another window during the pointer-settle interval; the press must stop. Cancel after mouse-down and verify mouse-up is still delivered so the button is not left held. Run `MouseInputTests` on macOS; injected event tests do not validate actual browser dispatch.
+- Force an inventory-panel detection timeout. Confirm there is one click, no bank/transfer action, and the panel's raw score appears in the error and export. Frames must remain memory-only.
+
 ## Jewels only
 
 - Begin with known eligible jewels and capture before-state evidence. Calibrate either a real new-success signal or a reliable numeric count/balance region. Select the matching verification mode and count format; verify OCR against known values. If no reliable signal exists, keep live banking blocked.

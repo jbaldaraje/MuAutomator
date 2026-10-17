@@ -104,6 +104,7 @@ public final class AutomationCoordinator {
     }
 
     private func wait(_ label: String, timeout: Double? = nil, requiredVisible: TargetRole? = nil,
+                      target: TargetRole? = nil,
                       inputPrecondition: Bool = false,
                       condition: (Observation) -> Bool) async throws -> Observation {
         let until = Date().addingTimeInterval(timeout ?? settings.actionTimeoutSeconds)
@@ -130,7 +131,12 @@ public final class AutomationCoordinator {
             }
             try await Task.sleep(nanoseconds: UInt64(settings.pollSeconds * 1_000_000_000))
         }
-        throw WorkflowFailure.timeout("Unverified \(label); no action will be repeated automatically")
+        let detail: String
+        if let target {
+            let score = lastObservation?.scores[target].map { String(format: "%.3f", $0) } ?? "unavailable"
+            detail = " (\(target.rawValue) score: \(score))"
+        } else { detail = "" }
+        throw WorkflowFailure.timeout("Unverified \(label)\(detail); no action will be repeated automatically")
     }
 
     @discardableResult
@@ -161,7 +167,7 @@ public final class AutomationCoordinator {
         try await gate()
         guard let io else { throw CancellationError() }
         try await io.perform(action)
-        transition(stage, "Delivered \(action); result pending visual verification")
+        transition(stage, "Delivered \(io.describeAction(action)); result pending visual verification")
         return frame
     }
 
@@ -207,12 +213,12 @@ public final class AutomationCoordinator {
         var frame = try await observe()
         if !frame.has(.inventoryPanel) {
             try await action(.click(.inventoryControl), requiring: .normalGameplay)
-            frame = try await wait("inventory panel") { $0.has(.inventoryPanel) }
+            frame = try await wait("inventory panel", target: .inventoryPanel) { $0.has(.inventoryPanel) }
         }
         if !frame.has(.bankTitle) {
             transition(.openingJewelBank, "Opening calibrated Jewel bank control once")
             try await action(.click(.bankControl), requiring: .inventoryPanel)
-            frame = try await wait("Jewel bank") { $0.has(.bankTitle) }
+            frame = try await wait("Jewel bank", target: .bankTitle) { $0.has(.bankTitle) }
         }
         // Existing success/processing evidence cannot be attributed to our new transfer.
         guard !frame.has(.processingIndicator), settings.bankingVerification != .newSuccessIndicator || !frame.has(.transferSuccess) else {

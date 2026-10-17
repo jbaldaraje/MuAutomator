@@ -178,7 +178,7 @@ struct CalibrationView: View {
                         }
                     }.padding(.top, 8)
                 }
-                Text("Label count does not verify detection. Each target needs its own real screen example; not every target should match the same screenshot. Click targets use the center of your rectangle.")
+                Text("Label count does not verify detection. Each target needs its own real screen example; not every target should match the same screenshot. Click targets use a measured cursor position when set, otherwise the rectangle center.")
                     .foregroundStyle(.secondary)
             }.font(.callout).frame(maxWidth: .infinity, alignment: .leading).padding(8)
         }
@@ -204,8 +204,24 @@ struct CalibrationView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if !configuration.strictGameplayRecognition && capture.role.isClickControl {
-                    Text("Relaxed mode clicks the center of this saved region even when its OCR/template does not match.")
+                    Text("Relaxed mode uses this control's saved click point, or the rectangle center, even when its OCR/template does not match.")
                         .font(.caption)
+                }
+                if capture.role.isClickControl,
+                   let target = capture.profile.targets.first(where: { $0.role == capture.role }) {
+                    HStack {
+                        Button("Set click from game cursor (5 seconds)") { Task { await capture.locateClickFromCursor() } }
+                            .disabled(capture.busy || capture.selectedID == nil)
+                        if target.clickPoint != nil {
+                            Button("Use rectangle center") { try? capture.setClickPoint(nil) }.disabled(capture.busy)
+                        }
+                    }
+                    Text("Focus the selected game and hover its actual button during the countdown. This measures a position without clicking or changing the recognition rectangle.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if let point = target.clickPoint {
+                        Text("Cursor click point: \(point.x, specifier: "%.4f"), \(point.y, specifier: "%.4f") of the selected window")
+                            .font(.caption.monospaced())
+                    }
                 }
                 if let target = capture.profile.targets.first(where: { $0.role == capture.role }),
                    let image = capture.image, let cropped = VisionService.crop(image, region: target.region) {
