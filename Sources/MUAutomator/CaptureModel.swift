@@ -89,6 +89,7 @@ final class CaptureModel: ObservableObject {
     }
 
     func stopPreview() {
+        guard previewEnabled || previewTask != nil else { return }
         previewTask?.cancel(); previewTask = nil; previewEnabled = false
     }
 
@@ -96,7 +97,9 @@ final class CaptureModel: ObservableObject {
         guard !busy else { return }
         busy = true
         defer { busy = false }
-        guard CGPreflightScreenCaptureAccess() || (requestPermission && CGRequestScreenCaptureAccess()) else {
+        let allowed = await Task.detached(priority: .utility) { CGPreflightScreenCaptureAccess() }.value
+        guard !Task.isCancelled else { return }
+        guard allowed || (requestPermission && CGRequestScreenCaptureAccess()) else {
             windows = []; select(nil)
             message = "Allow Screen Recording in System Settings → Privacy & Security, then relaunch if macOS requests it."
             return
@@ -119,14 +122,20 @@ final class CaptureModel: ObservableObject {
         guard !busy, let id = selectedID else { return }
         busy = true
         defer { busy = false }
-        image = nil; capturedAt = nil; detection = nil
-        guard CGPreflightScreenCaptureAccess() else {
+        // Keep the last frame mounted while a new one is captured. Removing it
+        // each tick tears down/rebuilds the calibration canvas during preview.
+        detection = nil
+        let allowed = await Task.detached(priority: .utility) { CGPreflightScreenCaptureAccess() }.value
+        guard !Task.isCancelled else { return }
+        guard allowed else {
+            image = nil; capturedAt = nil
             message = "Screen Recording permission is missing or revoked."
             return
         }
         do {
             // Resolve the window again; never capture from a stale selection object.
             let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+            try Task.checkCancellation()
             guard let window = content.windows.first(where: { $0.windowID == id }) else {
                 select(nil); message = "Selected window disappeared. Select it again."; return
             }
@@ -136,10 +145,16 @@ final class CaptureModel: ObservableObject {
             config.height = max(1, Int(window.frame.height * 2))
             config.showsCursor = false
             let frame = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+            try Task.checkCancellation()
             guard selectedID == id else { return }
             image = frame; capturedAt = Date()
             message = "Snapshot captured. Drag a rectangle to label a target. No input is sent to the game."
-        } catch { message = "Capture failed: \(error.localizedDescription)" }
+        } catch is CancellationError {
+            // Leaving Calibration cancels preview without clearing the frozen frame.
+        } catch {
+            image = nil; capturedAt = nil
+            message = "Capture failed: \(error.localizedDescription)"
+        }
     }
 
     func mark(_ region: NormalizedRegion) {

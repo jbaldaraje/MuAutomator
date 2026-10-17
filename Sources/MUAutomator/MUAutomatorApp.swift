@@ -18,7 +18,8 @@ struct MUAutomatorApp: App {
                     Button("Emergency Stop", role: .destructive) { model.stop() }
                 }.padding()
                 TabView {
-                    DashboardView(model: model, capture: model.capture).tabItem { Label("Dashboard", systemImage: "gauge") }
+                    DashboardView(model: model, capture: model.capture, permissions: model.permissions)
+                        .tabItem { Label("Dashboard", systemImage: "gauge") }
                     ScrollView { CalibrationView(capture: model.capture).padding() }
                         .disabled(model.locked).tabItem { Label("Calibration", systemImage: "viewfinder") }
                     WorkflowSettingsView(model: model).tabItem { Label("Workflows", systemImage: "gearshape") }
@@ -36,6 +37,7 @@ struct MUAutomatorApp: App {
 struct DashboardView: View {
     @ObservedObject var model: SessionModel
     @ObservedObject var capture: CaptureModel
+    @ObservedObject var permissions: PermissionStatusModel
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
@@ -60,9 +62,7 @@ struct DashboardView: View {
                         Text("Game state: \(model.runner.lastObservation?.state.rawValue ?? "unknown")")
                         Text("Last verified result: \(model.runner.lastVerifiedAction ?? "none")")
                         if let error = model.runner.lastError { Text(error).foregroundStyle(.red).textSelection(.enabled) }
-                        TimelineView(.periodic(from: .now, by: 1)) { _ in
-                            Text("Screen Recording: \(CGPreflightScreenCaptureAccess() ? "allowed" : "missing") • Accessibility: \(AXIsProcessTrusted() ? "allowed" : "missing")")
-                        }
+                        Text("Screen Recording: \(permissionLabel(permissions.screenRecordingAllowed)) • Accessibility: \(permissionLabel(permissions.accessibilityAllowed))")
                         Button("Request Accessibility for live input") { model.requestInputPermission() }
                             .disabled(model.locked)
                         Button(model.reviewed ? "Reconfirm dry-run detection reviewed" : "Confirm I reviewed dry-run detection") { model.reviewDetection() }
@@ -83,6 +83,18 @@ struct DashboardView: View {
                     .foregroundStyle(.secondary)
             }.padding(24)
         }
+        .task {
+            // SwiftUI cancels this task when Dashboard leaves the visible hierarchy.
+            while !Task.isCancelled {
+                await permissions.refresh()
+                do { try await Task.sleep(nanoseconds: 2_000_000_000) }
+                catch { return }
+            }
+        }
+    }
+
+    private func permissionLabel(_ allowed: Bool?) -> String {
+        allowed.map { $0 ? "allowed" : "missing" } ?? "checking…"
     }
 }
 

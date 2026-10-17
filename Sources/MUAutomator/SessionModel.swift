@@ -12,6 +12,7 @@ final class SessionModel: ObservableObject {
     @Published var failureReviewed = false
     @Published private(set) var arming = false
     @Published private(set) var reviewed = false
+    let permissions = PermissionStatusModel()
     let capture = CaptureModel()
     let runner = AutomationCoordinator()
     let recorder = RouteRecorder()
@@ -184,5 +185,31 @@ final class SessionModel: ObservableObject {
             }.joined(separator: "\n")
             try text.write(to: url, atomically: true, encoding: .utf8)
         } catch { self.error = error.localizedDescription }
+    }
+}
+
+/// Display-only status. Live input still checks current permissions independently.
+@MainActor
+final class PermissionStatusModel: ObservableObject {
+    typealias Reader = @Sendable () -> (screenRecording: Bool, accessibility: Bool)
+    @Published private(set) var screenRecordingAllowed: Bool?
+    @Published private(set) var accessibilityAllowed: Bool?
+    private var refreshInFlight = false
+    private let read: Reader
+
+    init(read: @escaping Reader = { (CGPreflightScreenCaptureAccess(), AXIsProcessTrusted()) }) {
+        self.read = read
+    }
+
+    func refresh() async {
+        guard !refreshInFlight else { return }
+        refreshInFlight = true
+        defer { refreshInFlight = false }
+        // Privacy-service queries must never block SwiftUI's rendering/main actor.
+        let reader = read
+        let status = await Task.detached(priority: .utility) { reader() }.value
+        guard !Task.isCancelled else { return }
+        if screenRecordingAllowed != status.screenRecording { screenRecordingAllowed = status.screenRecording }
+        if accessibilityAllowed != status.accessibility { accessibilityAllowed = status.accessibility }
     }
 }

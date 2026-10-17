@@ -69,3 +69,15 @@ On Linux the Swift package intentionally exposes only the core library/test targ
 The game URL is `https://open.mu/versions/20261006042155/index.html`. Cloud access currently fails at the network proxy with CONNECT 403. An `open.mu` allowlist addition was saved in the environment draft; review/save it in environment settings and publish before retrying. Additional game-service destinations may become apparent only after the page loads.
 
 Cloud tasks are already isolated: use the existing checkout; do not create a Git worktree unless explicitly requested.
+
+## If the app stops responding
+
+The Dashboard reads cached permission status; privacy-service queries run off the main actor. Leaving Calibration freezes its preview and retains the last frame. These lifecycle changes need verification on macOS.
+
+If a hang persists, capture a process sample while the app is still frozen, before force-quitting:
+
+```sh
+sample MUAutomator 5 -file /tmp/MUAutomator-hang.txt
+```
+
+Alternatively use Activity Monitor → MUAutomator → Sample Process. The main-thread call graph identifies the blocking operation; include it when reporting a hang. A process sample is different from a crash report because a hung process has not exited.

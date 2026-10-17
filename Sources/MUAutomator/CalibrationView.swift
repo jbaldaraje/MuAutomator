@@ -93,6 +93,7 @@ struct CalibrationView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }.padding(8)
         }
+        .onDisappear { capture.stopPreview() }
     }
 }
 

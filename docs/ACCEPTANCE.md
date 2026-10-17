@@ -7,6 +7,7 @@ Run these checks on macOS 14+ with Xcode and the actual selected Chrome game win
 - Run `swift test -j 2`. On macOS this includes `MacAdapterTests` and compiles the executable. Run `bash scripts/build-macos.sh`; verify an Apple Silicon `.app` is produced and its ad-hoc signature check passes.
 - Launch the built app. Deny Screen Recording and verify an actionable error with no screenshot. Grant access, relaunch if requested, select the correct Chrome window and verify capture matches it.
 - Test Retina scaling, resizing, window movement and browser zoom. Freeze preview, label regions, save/relaunch, and inspect alignment. Clear/recalibrate after layout changes.
+- Switch Calibration → Dashboard repeatedly, both with preview off and while preview is running. Verify preview freezes when leaving Calibration, Dashboard stays responsive, and permission status updates without resetting the layout every second. Repeat with Screen Recording denied and granted.
 - Verify Accessibility is requested only through the live-input button. Revoke either permission during a workflow; verify subsequent input stops.
 - Change Chrome tabs, close the target, select another Chrome window and focus another application. Verify no further action is delivered to the replacement target.
 - Test Emergency Stop, its global chord, cancellation during countdown and waits, and closing the app window. Check no subsequent scheduled action fires. Already delivered events are outside cancellation control.
