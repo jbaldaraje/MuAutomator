@@ -9,18 +9,39 @@ final class MacWorkflowIO: WorkflowIO {
     let profile: CalibrationProfile
     private var currentWindow: SCWindow
     private var lastObservation: Observation?
-    private let title: String?
+    private var binding: BrowserWindowBinding?
     private let aspect: Double
 
     init(window: SCWindow, profile: CalibrationProfile) throws {
         try profile.validate()
         self.window = window; self.currentWindow = window; self.profile = profile
-        title = window.title
         aspect = Double(window.frame.width / window.frame.height)
         if let calibrated = profile.windowAspectRatio, abs(calibrated - aspect) > 0.005 {
             throw WorkflowFailure.prerequisite("Window aspect ratio differs from calibration; calibrate again")
         }
     }
+
+    /// Run after the focus countdown, before any workflow or recording input.
+    func prepareSelectedWindow() async throws {
+        let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+        try Task.checkCancellation()
+        guard let fresh = content.windows.first(where: { $0.windowID == window.windowID }),
+              fresh.owningApplication?.processID == window.owningApplication?.processID,
+              abs(Double(fresh.frame.width / fresh.frame.height) - aspect) < 0.005,
+              let candidate = BrowserWindowCandidate(fresh) else {
+            throw WorkflowFailure.prerequisite("Selected window disappeared or changed layout. Refresh selection and review detection.")
+        }
+        let candidates = content.windows.compactMap(BrowserWindowCandidate.init)
+        let verified = try await Task.detached(priority: .userInitiated) {
+            try BrowserWindowDiscovery.bind(candidate, among: candidates)
+        }.value
+        try Task.checkCancellation()
+        currentWindow = fresh
+        binding = verified
+        try checkSafety()
+    }
+
+    var captureBounds: CGRect { currentWindow.frame }
 
     static func requireTargets(_ roles: Set<TargetRole>, in profile: CalibrationProfile) throws {
         for role in roles.sorted(by: { $0.rawValue < $1.rawValue }) {
@@ -47,8 +68,11 @@ final class MacWorkflowIO: WorkflowIO {
               NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processID else {
             throw WorkflowFailure.unsafe("Selected game's application lost focus")
         }
-        // Public AX bounds/title checks distinguish windows of the same browser process.
+        guard let binding else { throw WorkflowFailure.unsafe("Selected window has not been verified; start again") }
+        // Retained AX identity distinguishes same-title windows of one browser.
+        // Titles are presentation text, not a window or tab identifier.
         let appElement = AXUIElementCreateApplication(app.processID)
+        AXUIElementSetMessagingTimeout(appElement, 0.15)
         var element: CFTypeRef?
         if AXUIElementCopyAttributeValue(appElement, kAXFocusedUIElementAttribute as CFString, &element) == .success,
            let element, CFGetTypeID(element) == AXUIElementGetTypeID() {
@@ -64,7 +88,9 @@ final class MacWorkflowIO: WorkflowIO {
             throw WorkflowFailure.unsafe("Cannot verify focused browser window")
         }
         let focused = focusedValue as! AXUIElement
-        var positionValue: CFTypeRef?, sizeValue: CFTypeRef?, titleValue: CFTypeRef?
+        try binding.requireFocusedWindow(focused)
+        AXUIElementSetMessagingTimeout(focused, 0.15)
+        var positionValue: CFTypeRef?, sizeValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(focused, kAXPositionAttribute as CFString, &positionValue) == .success,
               AXUIElementCopyAttributeValue(focused, kAXSizeAttribute as CFString, &sizeValue) == .success,
               let positionValue, let sizeValue,
@@ -78,10 +104,6 @@ final class MacWorkflowIO: WorkflowIO {
               abs(size.width - currentWindow.frame.width) < 2, abs(size.height - currentWindow.frame.height) < 2 else {
             throw WorkflowFailure.unsafe("Window moved, resized, or another browser window has focus; refresh selection")
         }
-        _ = AXUIElementCopyAttributeValue(focused, kAXTitleAttribute as CFString, &titleValue)
-        if let title, !title.isEmpty, (titleValue as? String) != title {
-            throw WorkflowFailure.unsafe("Browser title/tab changed; select and calibrate the game again")
-        }
     }
 
     func observe() async throws -> Observation {
@@ -90,7 +112,8 @@ final class MacWorkflowIO: WorkflowIO {
         try checkSafety()
         let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
         guard let fresh = content.windows.first(where: { $0.windowID == window.windowID }),
-              fresh.title == title, abs(Double(fresh.frame.width / fresh.frame.height) - aspect) < 0.005 else {
+              fresh.owningApplication?.processID == window.owningApplication?.processID,
+              abs(Double(fresh.frame.width / fresh.frame.height) - aspect) < 0.005 else {
             throw WorkflowFailure.unsafe("Selected window disappeared or changed layout")
         }
         currentWindow = fresh
@@ -148,14 +171,11 @@ final class MacWorkflowIO: WorkflowIO {
     }
 
     private func verifyGamePage() async throws {
-        guard let candidate = BrowserWindowCandidate(currentWindow) else {
-            throw WorkflowFailure.unsafe("Selected window is not a supported browser")
-        }
-        let confirmed = await Task.detached(priority: .utility) {
-            BrowserWindowDiscovery.focusedWindowIsGame(candidate)
+        guard let binding else { throw WorkflowFailure.unsafe("Selected window has not been verified; start again") }
+        try await Task.detached(priority: .utility) {
+            try BrowserWindowDiscovery.verify(binding)
         }.value
         try Task.checkCancellation()
-        guard confirmed else { throw WorkflowFailure.unsafe("Selected browser page is no longer verified as https://open.mu") }
     }
 
     private func click(x: Double, y: Double, source: CGEventSource?) throws {

@@ -9,4 +9,19 @@ public enum GamePagePolicy {
               url.port == nil || url.port == 443 else { return false }
         return true
     }
+
+    /// Compare document addresses independently of mutable browser/page titles.
+    /// Preserve path, query and fragment so another open.mu page is not accepted.
+    public static func sameDocument(_ first: String?, _ second: String?) -> Bool {
+        guard allows(first), allows(second), let first, let second else { return false }
+        func normalized(_ address: String) -> URLComponents? {
+            guard var components = URLComponents(string: address) else { return nil }
+            components.scheme = components.scheme?.lowercased()
+            components.host = components.host?.lowercased()
+            if components.port == 443 { components.port = nil }
+            if components.path.isEmpty { components.path = "/" }
+            return components
+        }
+        return normalized(first) == normalized(second)
+    }
 }

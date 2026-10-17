@@ -48,7 +48,7 @@ Record route captures user clicks/key taps only in the selected focused window. 
 
 ## Safety and logging
 
-- One task serializes all input. Each action checks cancellation, permissions, focus, window identity, fresh evidence and its visual precondition.
+- One task serializes all input. Each action checks cancellation, permissions, focus, window identity, fresh evidence and its visual precondition. After the focus countdown, the selected ScreenCaptureKit window ID is bound to its public Accessibility window identity and active document. Display titles are not used as identity. Focusing another game window stops input even if it has the same title/URL. The original document URL must remain unchanged; browsers exposing an outer web-area identity also detect tab replacement/reload at the same URL.
 - Window disappearance, unexpected states, focus loss, revoked permissions or unverified outcomes stop execution for manual intervention. No automatic continuation follows them.
 - Transfer and helper actions are single-shot. Ambiguous outcomes are never automatically retried. Detection polling and recovery attempts are bounded by configured limits; maximum action retries remain an upper cap, not a promise to repeat mutations.
 - Pause prevents subsequent actions. Emergency Stop cancels the task and pending startup. The global stop chord is Control–Option–Command–Escape; pause/resume is Control–Option–Command–P. Verify both on macOS. Dashboard Resume waits five seconds so you can refocus the game. Already delivered events cannot be retracted.
@@ -58,7 +58,7 @@ Configuration, workflow settings, regions and small templates are saved in `~/Li
 
 ## Validation in this cloud environment
 
-The portable core built successfully and all 40 XCTest tests passed with official Swift 6.0.3 in Docker:
+The portable core built successfully and all 42 XCTest tests passed with official Swift 6.0.3 in Docker:
 
 ```sh
 docker run --rm --network none -v "$PWD":/src -w /src \
@@ -90,7 +90,7 @@ Alternatively use Activity Monitor → MUAutomator → Sample Process. The main-
 
 The picker verifies the active document URL through public macOS Accessibility metadata. It accepts HTTPS on the exact `open.mu` host (default port or 443), including versioned game paths. Other domains, misleading titles/links, inactive game tabs, and unreadable URLs are excluded. No browser tab is switched automatically. Make the game the active tab, grant Accessibility using the Calibration button, then refresh. Chrome is the primary target; other listed browsers work only when they expose the required active-document metadata. Capture rechecks the URL; live automation rechecks the focused browser URL before each input operation. No AppleScript, browser extension, private browser API, or extra network request is used.
 
-Discovery reads the browser application's Accessibility role to activate Chromium's native accessibility support, then retries an initially empty web tree within a bounded background lookup. Each window gets its own document-search budget within an eight-second per-browser limit. Discovery matches unique window bounds within the same process, so a stale/different title from ScreenCaptureKit no longer hides an otherwise identifiable game window. Overlapping windows with indistinguishable bounds remain excluded; move them apart and refresh. Live input retains its separate focus/title/layout checks.
+Discovery reads the browser application's Accessibility role to activate Chromium's native accessibility support, then retries an initially empty web tree within a bounded background lookup. Each window gets its own document-search budget within an eight-second per-browser limit. Discovery matches unique window bounds within the same process, so a stale/different title from ScreenCaptureKit no longer hides an otherwise identifiable game window. Overlapping windows with indistinguishable bounds remain excluded; move them apart and refresh. Live input separately checks the bound AX window identity, selected document, focus and layout.
 
 The details below the picker now explain each excluded window: an Accessibility error, unmatched/ambiguous bounds, a missing document URL, an origin other than HTTPS open.mu, or a search limit. If Chrome is still missing after rebuilding, copy those details from Calibration. They omit page URLs and titles.
 

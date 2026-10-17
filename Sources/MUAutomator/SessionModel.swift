@@ -119,6 +119,8 @@ final class SessionModel: ObservableObject {
                 do {
                     try await Task.sleep(nanoseconds: 5_000_000_000)
                     try Task.checkCancellation()
+                    error = "Verifying selected game window…"
+                    try await io.prepareSelectedWindow()
                     try runner.start(configuration: config, settings: settings, io: io, routeTest: routeTest)
                     error = nil
                 } catch is CancellationError { error = "Start cancelled" }
