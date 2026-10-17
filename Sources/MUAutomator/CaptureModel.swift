@@ -20,6 +20,7 @@ final class CaptureModel: ObservableObject {
     @Published private(set) var previewEnabled = false
     @Published var profileName = "Default"
     @Published private(set) var namedProfiles: [String] = []
+    @Published private(set) var discoveryDetails = ""
     private var previewTask: Task<Void, Never>?
     private let profileURL: URL
 
@@ -95,27 +96,49 @@ final class CaptureModel: ObservableObject {
 
     func refresh(requestPermission: Bool = false) async {
         guard !busy else { return }
+        stopPreview()
         busy = true
         defer { busy = false }
+        message = "Looking for game windows…"
+        discoveryDetails = ""
         let allowed = await Task.detached(priority: .utility) { CGPreflightScreenCaptureAccess() }.value
         guard !Task.isCancelled else { return }
-        guard allowed || (requestPermission && CGRequestScreenCaptureAccess()) else {
-            windows = []; select(nil)
-            message = "Allow Screen Recording in System Settings → Privacy & Security, then relaunch if macOS requests it."
-            return
+        if !allowed && requestPermission {
+            _ = CGRequestScreenCaptureAccess()
         }
+        // ScreenCaptureKit is the authority: a stale preflight result must not
+        // prevent the actual framework from reporting its permission/error state.
         do {
-            let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+            // Include other Spaces and minimized windows in discovery. The user
+            // must still restore/focus the selected game before live automation.
+            let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
+            try Task.checkCancellation()
             windows = content.windows.filter {
-                $0.windowLayer == 0 && $0.frame.width > 100 && $0.frame.height > 100
+                $0.windowLayer == 0 && $0.frame.width > 0 && $0.frame.height > 0
                 && $0.owningApplication?.processID != ProcessInfo.processInfo.processIdentifier
-            }.sorted { ($0.owningApplication?.applicationName ?? "") < ($1.owningApplication?.applicationName ?? "") }
+            }.sorted {
+                let left = ($0.owningApplication?.applicationName ?? "") + ($0.title ?? "")
+                let right = ($1.owningApplication?.applicationName ?? "") + ($1.title ?? "")
+                return left == right ? $0.windowID < $1.windowID : left < right
+            }
             if let id = selectedID, !windows.contains(where: { $0.windowID == id }) { select(nil) }
-            message = "Select the Chrome game window. Only that window will be captured."
+            discoveryDetails = "ScreenCaptureKit returned \(content.windows.count) windows; \(windows.count) selectable. Permission precheck: \(allowed ? "allowed" : "not confirmed")."
+            message = windows.isEmpty
+                ? "No selectable windows returned. Open Chrome with the game, enable this app in Screen Recording settings, then quit/reopen MU Automator and refresh."
+                : "Found \(windows.count) windows. Select Chrome below. Restore the game window if it is minimized or on another Space."
+        } catch is CancellationError {
+            message = "Window refresh cancelled."
         } catch {
             windows = []; select(nil)
-            message = "Window enumeration failed: \(error.localizedDescription)"
+            let failure = error as NSError
+            discoveryDetails = "\(failure.domain), code \(failure.code). Permission precheck: \(allowed ? "allowed" : "not confirmed")."
+            message = "Cannot list game windows: \(failure.localizedDescription). Check Screen Recording permission for this copy of MU Automator, then quit/reopen it and refresh."
         }
+    }
+
+    func openScreenRecordingSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") else { return }
+        NSWorkspace.shared.open(url)
     }
 
     func capture() async {
@@ -125,16 +148,11 @@ final class CaptureModel: ObservableObject {
         // Keep the last frame mounted while a new one is captured. Removing it
         // each tick tears down/rebuilds the calibration canvas during preview.
         detection = nil
-        let allowed = await Task.detached(priority: .utility) { CGPreflightScreenCaptureAccess() }.value
-        guard !Task.isCancelled else { return }
-        guard allowed else {
-            image = nil; capturedAt = nil
-            message = "Screen Recording permission is missing or revoked."
-            return
-        }
         do {
             // Resolve the window again; never capture from a stale selection object.
-            let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+            // The framework enforces Screen Recording access for both discovery
+            // and capture, even when the legacy preflight API disagrees.
+            let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
             try Task.checkCancellation()
             guard let window = content.windows.first(where: { $0.windowID == id }) else {
                 select(nil); message = "Selected window disappeared. Select it again."; return

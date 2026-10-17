@@ -81,3 +81,12 @@ sample MUAutomator 5 -file /tmp/MUAutomator-hang.txt
 ```
 
 Alternatively use Activity Monitor → MUAutomator → Sample Process. The main-thread call graph identifies the blocking operation; include it when reporting a hang. A process sample is different from a crash report because a hung process has not exited.
+
+## If the window menu is empty
+
+1. Open **System Settings → Privacy & Security → Screen & System Audio Recording** (or **Screen Recording** on older macOS).
+2. Enable the **MU Automator** app you are actually launching. Accessibility permission and Chrome's own permissions do not grant MU Automator screen capture access.
+3. Fully quit and reopen that app bundle, then click **Calibration → Allow capture / Refresh windows**. If necessary, use the settings panel's add button to select `.build/xcode/Build/Products/Release/MUAutomator.app` in your checkout.
+4. Select Chrome from the Window menu. Discovery includes other Spaces; restore/show the actual game before capturing or running automation.
+
+Use the same `.app` consistently instead of switching between Xcode, `swift run`, and different copies. Rebuilding an ad-hoc signed bundle can invalidate an existing permission grant; reapprove the rebuilt app if needed. Permission is still enforced by macOS. The app now attempts ScreenCaptureKit discovery rather than rejecting it solely on a legacy precheck, and reports returned-window counts or the native error domain/code below the controls.
