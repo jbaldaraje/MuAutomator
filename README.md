@@ -88,6 +88,12 @@ Alternatively use Activity Monitor → MUAutomator → Sample Process. The main-
 
 The picker verifies the active document URL through public macOS Accessibility metadata. It accepts HTTPS on the exact `open.mu` host (default port or 443), including versioned game paths. Other domains, misleading titles/links, inactive game tabs, and unreadable URLs are excluded. No browser tab is switched automatically. Make the game the active tab, grant Accessibility using the Calibration button, then refresh. Chrome is the primary target; other listed browsers work only when they expose the required active-document metadata. Capture rechecks the URL; live automation rechecks the focused browser URL before each input operation. No AppleScript, browser extension, private browser API, or extra network request is used.
 
+Discovery reads the browser application's Accessibility role to activate Chromium's native accessibility support, then retries an initially empty web tree within a bounded background lookup. Each window gets its own document-search budget within an eight-second per-browser limit. Discovery matches unique window bounds within the same process, so a stale/different title from ScreenCaptureKit no longer hides an otherwise identifiable game window. Overlapping windows with indistinguishable bounds remain excluded; move them apart and refresh. Live input retains its separate focus/title/layout checks.
+
+The details below the picker now explain each excluded window: an Accessibility error, unmatched/ambiguous bounds, a missing document URL, an origin other than HTTPS open.mu, or a search limit. If Chrome is still missing after rebuilding, copy those details from Calibration. They omit page URLs and titles.
+
+Chromium documents its lazy activation in [the application role getter](https://github.com/chromium/chromium/blob/main/chrome/browser/chrome_browser_application_mac.mm) and [the web-content container role getter](https://github.com/chromium/chromium/blob/main/content/app_shim_remote_cocoa/render_widget_host_view_cocoa.mm). Actual Chrome/macOS interoperability still needs local acceptance testing.
+
 ## If the window menu is empty
 
 1. Open **System Settings → Privacy & Security → Screen & System Audio Recording** (or **Screen Recording** on older macOS).
