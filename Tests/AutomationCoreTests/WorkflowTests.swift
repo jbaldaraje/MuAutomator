@@ -7,10 +7,12 @@ private final class FakeIO: WorkflowIO {
     var actions: [GameAction] = []
     var unsafe = false
     var texts: [TargetRole: String] = [:]
+    var configuredTargets: Set<TargetRole> = []
     var onAction: ((GameAction) -> Void)?
     func checkSafety() throws {
         if unsafe { throw WorkflowFailure.unsafe("Focus lost") }
     }
+    func hasCalibratedTarget(_ role: TargetRole) -> Bool { configuredTargets.contains(role) }
     func observe() async throws -> Observation {
         try checkSafety()
         let roles = frames.count > 1 ? frames.removeFirst() : (frames.first ?? [])
@@ -74,6 +76,92 @@ final class WorkflowTests: XCTestCase {
         XCTAssertEqual(runner.stage, .completed)
         XCTAssertEqual(io.actions, [.click(.inventoryControl), .click(.bankControl), .click(.transferButton), .click(.bankClose), .click(.inventoryClose)])
         XCTAssertEqual(runner.lastObservation?.state, .unknown, "Do not fabricate a gameplay match")
+    }
+
+    @MainActor func testRelaxedBankingUsesAllSavedControlPositionsWithoutButtonRecognition() async throws {
+        let io = FakeIO()
+        io.configuredTargets = [.inventoryControl, .bankControl, .transferButton, .bankClose, .inventoryClose]
+        io.frames = [[]]
+        io.onAction = { action in
+            switch action {
+            case .click(.inventoryControl): io.frames = [[.inventoryPanel]]
+            case .click(.bankControl): io.frames = [[.inventoryPanel, .bankTitle]]
+            case .click(.transferButton): io.frames = [[.inventoryPanel, .bankTitle, .transferSuccess]]
+            case .click(.bankClose): io.frames = [[.inventoryPanel]]
+            case .click(.inventoryClose): io.frames = [[]]
+            default: break
+            }
+        }
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: .init(), io: io)
+        try await finish(runner)
+        XCTAssertEqual(runner.stage, .completed)
+        XCTAssertEqual(io.actions, [.click(.inventoryControl), .click(.bankControl), .click(.transferButton), .click(.bankClose), .click(.inventoryClose)])
+    }
+
+    @MainActor func testStrictRecognitionStillRequiresButtonMatchDespiteSavedPosition() async throws {
+        let io = FakeIO(); io.frames = [[.normalGameplay]]; io.configuredTargets = [.inventoryControl]
+        var config = AutomationConfiguration(); config.dryRun = false; config.strictGameplayRecognition = true
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: .init(), io: io)
+        try await finish(runner)
+        XCTAssertEqual(runner.stage, .waitingForManualIntervention)
+        XCTAssertTrue(io.actions.isEmpty)
+    }
+
+    @MainActor func testSavedTransferPositionDoesNotRepeatUnverifiedTransfer() async throws {
+        let io = FakeIO(); io.frames = [[.inventoryPanel, .bankTitle]]; io.configuredTargets = [.transferButton]
+        var config = AutomationConfiguration(); config.dryRun = false
+        var settings = WorkflowSettings(); settings.actionTimeoutSeconds = 0.1; settings.pollSeconds = 0.01
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await finish(runner)
+        XCTAssertEqual(runner.stage, .waitingForManualIntervention)
+        XCTAssertEqual(io.actions, [.click(.transferButton)])
+    }
+
+    @MainActor func testRelaxedTransferWaitToleratesBriefMissingBankTitleWhileStrictStops() async throws {
+        let bank: [TargetRole] = [.inventoryPanel, .bankTitle, .transferButton, .bankClose]
+        let success = bank + [.transferSuccess]
+        let inventory: [TargetRole] = [.inventoryPanel, .inventoryClose]
+        for strict in [false, true] {
+            let io = FakeIO()
+            io.frames = [bank, bank, [], success, success, inventory, inventory, [.normalGameplay]]
+            var config = AutomationConfiguration(); config.dryRun = false; config.strictGameplayRecognition = strict
+            var settings = WorkflowSettings(); settings.pollSeconds = 0.01
+            let runner = AutomationCoordinator()
+            try runner.start(configuration: config, settings: settings, io: io)
+            try await finish(runner)
+            XCTAssertEqual(runner.stage, strict ? .waitingForManualIntervention : .completed)
+            XCTAssertEqual(io.actions.filter { $0 == .click(.transferButton) }.count, 1)
+        }
+    }
+
+    @MainActor func testRelaxedActionWaitsForTransientlyMissingPanelBeforeClicking() async throws {
+        let inventory: [TargetRole] = [.inventoryPanel, .bankControl, .inventoryClose]
+        let bank: [TargetRole] = [.inventoryPanel, .bankTitle, .transferButton, .bankClose]
+        let success = bank + [.transferSuccess]
+        let io = FakeIO()
+        io.frames = [inventory, [], inventory, bank, bank, success, success, inventory, inventory, [.normalGameplay]]
+        var config = AutomationConfiguration(); config.dryRun = false
+        var settings = WorkflowSettings(); settings.pollSeconds = 0.01
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await finish(runner)
+        XCTAssertEqual(runner.stage, .completed)
+        XCTAssertEqual(io.actions.first, .click(.bankControl))
+    }
+
+    @MainActor func testInterruptionDuringRelaxedPreconditionWaitStopsBeforeClick() async throws {
+        let io = FakeIO(); io.frames = [[.inventoryPanel], [], [.deathIndicator], [.inventoryPanel]]
+        io.configuredTargets = [.bankControl]
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: .init(), io: io)
+        try await finish(runner)
+        XCTAssertEqual(runner.stage, .waitingForManualIntervention)
+        XCTAssertTrue(io.actions.isEmpty)
     }
 
     @MainActor func testStrictRecognitionStillRejectsMissingGameplayBeforeInventoryClick() async throws {
@@ -309,15 +397,27 @@ final class WorkflowTests: XCTestCase {
         XCTAssertTrue(io.actions.isEmpty)
     }
 
-    @MainActor func testBankDialogDisappearancePausesWithoutClosingAnything() async throws {
+    @MainActor func testStrictBankDialogDisappearancePausesWithoutClosingAnything() async throws {
         let io = FakeIO(); io.frames = [[.inventoryPanel, .bankTitle, .transferButton]]
         io.onAction = { _ in io.frames = [[.inventoryPanel]] }
         let runner = AutomationCoordinator()
-        var config = AutomationConfiguration(); config.dryRun = false
+        var config = AutomationConfiguration(); config.dryRun = false; config.strictGameplayRecognition = true
         try runner.start(configuration: config, settings: .init(), io: io)
         try await finish(runner)
         XCTAssertEqual(runner.stage, .waitingForManualIntervention)
         XCTAssertTrue(runner.events.last?.message.contains("disappeared") == true)
+        XCTAssertEqual(io.actions, [.click(.transferButton)])
+    }
+
+    @MainActor func testRelaxedPermanentBankDisappearanceTimesOutWithoutRepeatingOrClosing() async throws {
+        let io = FakeIO(); io.frames = [[.inventoryPanel, .bankTitle, .transferButton]]
+        io.onAction = { _ in io.frames = [[.inventoryPanel]] }
+        var config = AutomationConfiguration(); config.dryRun = false
+        var settings = WorkflowSettings(); settings.actionTimeoutSeconds = 0.1; settings.pollSeconds = 0.01
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await finish(runner)
+        XCTAssertEqual(runner.stage, .waitingForManualIntervention)
         XCTAssertEqual(io.actions, [.click(.transferButton)])
     }
 

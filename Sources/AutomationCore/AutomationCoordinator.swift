@@ -104,12 +104,16 @@ public final class AutomationCoordinator {
     }
 
     private func wait(_ label: String, timeout: Double? = nil, requiredVisible: TargetRole? = nil,
+                      inputPrecondition: Bool = false,
                       condition: (Observation) -> Bool) async throws -> Observation {
         let until = Date().addingTimeInterval(timeout ?? settings.actionTimeoutSeconds)
         var attempt = 0
         while Date() < until {
             let frame = try await observe()
-            if let requiredVisible, !frame.has(requiredVisible) {
+            if inputPrecondition && !frame.permitsInput(strictGameplayRecognition: config.strictGameplayRecognition) {
+                throw WorkflowFailure.unsafe("Input blocked by detected interruption state: \(frame.state.rawValue)")
+            }
+            if config.strictGameplayRecognition, let requiredVisible, !frame.has(requiredVisible) {
                 throw WorkflowFailure.uncertain("\(requiredVisible.rawValue) disappeared while waiting for \(label)")
             }
             if config.strictGameplayRecognition && frame.state == .unknown {
@@ -131,15 +135,21 @@ public final class AutomationCoordinator {
 
     @discardableResult
     private func action(_ action: GameAction, requiring role: TargetRole) async throws -> Observation {
-        let frame = try await observe()
+        var frame = try await observe()
         guard frame.permitsInput(strictGameplayRecognition: config.strictGameplayRecognition) else {
             throw WorkflowFailure.unsafe("Input blocked by detected interruption state: \(frame.state.rawValue)")
+        }
+        if !config.strictGameplayRecognition, role != .normalGameplay, !frame.has(role) {
+            frame = try await wait("\(role.rawValue) before action", inputPrecondition: true) { $0.has(role) }
         }
         guard (role == .normalGameplay && !config.strictGameplayRecognition) || frame.has(role) else {
             throw WorkflowFailure.unsafe("Missing precondition target: \(role.rawValue)")
         }
         if case let .click(target) = action {
-            guard target != .withdrawExcluded, frame.has(target) else { throw WorkflowFailure.unsafe("Click target not verified: \(target.rawValue)") }
+            let savedPosition = !config.strictGameplayRecognition && io?.hasCalibratedTarget(target) == true
+            guard target != .withdrawExcluded, frame.has(target) || savedPosition else {
+                throw WorkflowFailure.unsafe("Click target is missing or unrecognized: \(target.rawValue)")
+            }
             if target == .transferButton && ((settings.bankingVerification == .newSuccessIndicator && frame.has(.transferSuccess)) || frame.has(.processingIndicator)) {
                 throw WorkflowFailure.uncertain("Transfer precondition changed; existing success or processing evidence")
             }

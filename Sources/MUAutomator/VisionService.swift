@@ -30,9 +30,29 @@ enum VisionService {
         return success ? GrayImage(width: width, height: height, pixels: bytes) : nil
     }
 
-    static func detect(image: CGImage, profile: CalibrationProfile, timestamp: Date) throws -> Observation {
+    static func recognize(_ cropped: CGImage) throws -> [AutomationCore.OCRTextCandidate] {
+        // Render a standalone bitmap so Vision receives this target's pixels,
+        // independent of a cropped CGImage's parent backing store/row stride.
+        guard let context = CGContext(data: nil, width: cropped.width, height: cropped.height,
+                                      bitsPerComponent: 8, bytesPerRow: cropped.width * 4,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return [] }
+        context.draw(cropped, in: CGRect(x: 0, y: 0, width: cropped.width, height: cropped.height))
+        guard let image = context.makeImage() else { return [] }
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
+        try VNImageRequestHandler(cgImage: image, orientation: .up, options: [:]).perform([request])
+        return (request.results ?? []).compactMap { $0.topCandidates(1).first }.map {
+            AutomationCore.OCRTextCandidate(text: $0.string, confidence: Double($0.confidence))
+        }
+    }
+
+    static func detect(image: CGImage, profile: CalibrationProfile, timestamp: Date,
+                       strictRecognition: Bool = true, includeOCRDiagnostics: Bool = true) throws -> Observation {
         try profile.validate()
         var matches: [TargetRole: Double] = [:]
+        var scores: [TargetRole: Double] = [:]
         var texts: [TargetRole: String] = [:]
         for target in profile.targets {
             guard let cropped = crop(image, region: target.region) else { continue }
@@ -41,19 +61,17 @@ enum VisionService {
                 score = TemplateMatcher.similarity(template, candidate)
             }
             let expected = target.expectedText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let numeric = target.role == .inventoryCountText || target.role == .bankBalanceText
-            if !expected.isEmpty || numeric {
-                let request = VNRecognizeTextRequest()
-                request.recognitionLevel = .accurate
-                request.usesLanguageCorrection = false
-                try VNImageRequestHandler(cgImage: cropped, options: [:]).perform([request])
-                let candidates = (request.results ?? []).compactMap { $0.topCandidates(1).first }
-                let text = candidates.map(\.string).joined(separator: " ")
+            let numeric = target.role.isNumericEvidence
+            let needsOCR = numeric || (!expected.isEmpty && (strictRecognition || score == nil || includeOCRDiagnostics))
+            if needsOCR {
+                let candidates = try recognize(cropped)
+                let text = candidates.map(\.text).joined(separator: " ")
                 texts[target.role] = text
-                let contains = numeric || text.range(of: expected, options: [.caseInsensitive, .diacriticInsensitive]) != nil
-                let ocrScore = contains ? Double(candidates.map(\.confidence).min() ?? 0) : 0
-                score = numeric ? ocrScore : min(score ?? 1, ocrScore)
+                let ocrScore = numeric ? (candidates.map(\.confidence).min() ?? 0)
+                    : AutomationCore.OCRTextMatcher.confidence(for: expected, in: candidates)
+                score = AutomationCore.TargetRecognition.score(template: score, ocr: ocrScore, numeric: numeric, strict: strictRecognition)
             }
+            if let score { scores[target.role] = score }
             if let score, score >= target.threshold { matches[target.role] = score }
         }
         var inventory: InventoryEstimate?
@@ -65,6 +83,6 @@ enum VisionService {
                 columns: profile.inventoryColumns ?? 8, rows: profile.inventoryRows ?? 8,
                 jewel: profile.targets.first(where: { $0.role == .jewelSample })?.template)
         }
-        return Observation(timestamp: timestamp, matches: matches, text: texts, inventory: inventory)
+        return Observation(timestamp: timestamp, matches: matches, text: texts, inventory: inventory, scores: scores)
     }
 }

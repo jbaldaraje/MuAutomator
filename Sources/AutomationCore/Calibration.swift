@@ -12,6 +12,16 @@ public enum TargetRole: String, Codable, CaseIterable, Sendable {
     case emptyInventoryGrid, jewelSample
     case gameViewport, mapControl, mapDestination
     case inventoryCountText, bankBalanceText
+
+    public var isClickControl: Bool {
+        switch self {
+        case .inventoryControl, .bankControl, .transferButton, .bankClose, .inventoryClose,
+             .helperControl, .helperStart, .mapControl, .mapDestination: return true
+        default: return false
+        }
+    }
+
+    public var isNumericEvidence: Bool { self == .inventoryCountText || self == .bankBalanceText }
 }
 
 /// Window-relative, top-left origin. Independent of Retina pixel density.
