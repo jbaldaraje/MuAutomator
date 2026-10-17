@@ -18,4 +18,18 @@ final class GamePagePolicyTests: XCTestCase {
             XCTAssertFalse(GamePagePolicy.allows(address), address ?? "nil")
         }
     }
+
+    func testDocumentIdentityNormalizesOnlyOriginSpellingAndEmptyRootPath() {
+        XCTAssertTrue(GamePagePolicy.sameDocument("https://OPEN.MU:443", "https://open.mu/"))
+        XCTAssertTrue(GamePagePolicy.sameDocument("https://open.mu/game?account=1#play", "https://OPEN.MU:443/game?account=1#play"))
+    }
+
+    func testDocumentIdentityRejectsDifferentGamePageQueryOrFragment() {
+        let selected = "https://open.mu/game?account=1#play"
+        for other in ["https://open.mu/other?account=1#play", "https://open.mu/game?account=2#play",
+                      "https://open.mu/game?account=1#login", "https://example.com/game?account=1#play", nil] {
+            XCTAssertFalse(GamePagePolicy.sameDocument(selected, other))
+        }
+        XCTAssertFalse(GamePagePolicy.sameDocument(nil, nil))
+    }
 }

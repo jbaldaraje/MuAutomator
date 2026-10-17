@@ -27,7 +27,10 @@ final class RouteRecorder: ObservableObject {
                 guard let self else { return }
                 do {
                     try await Task.sleep(nanoseconds: 5_000_000_000)
+                    try await io?.prepareSelectedWindow()
+                    try Task.checkCancellation()
                     try io?.checkSafety()
+                    if let io { frame = io.captureBounds }
                     monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .keyDown]) { [weak self] event in
                         Task { @MainActor [weak self] in self?.record(event) }
                     }

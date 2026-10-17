@@ -35,6 +35,7 @@ final class BrowserWindowDiscoveryTests: XCTestCase {
         }, pause: {})
         XCTAssertTrue(GamePagePolicy.allows(lookup.url))
         XCTAssertEqual(passes, 2)
+        XCTAssertTrue(lookup.element.map { CFEqual($0, web) } ?? false)
     }
 
     func testOuterDocumentWinsOverEmbeddedGameOrLink() {

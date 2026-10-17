@@ -21,6 +21,34 @@ struct BrowserWindowCandidate: Sendable {
     }
 }
 
+/// AX references are immutable identities; public AX functions may query them
+/// from the background verifier or main-actor input gate. No mutable UI state
+/// is shared through this value.
+struct BrowserWindowBinding: @unchecked Sendable {
+    let windowID: UInt32
+    let processID: Int32
+    let windowElement: AXUIElement
+    let documentElement: AXUIElement?
+    let documentURL: String
+
+    func requireFocusedWindow(_ focused: AXUIElement) throws {
+        guard CFEqual(windowElement, focused) else {
+            throw WorkflowFailure.unsafe("Another browser window has focus. Focus selected game window \(windowID), then start/resume again.")
+        }
+    }
+
+    func requireSameDocument(url: String?, element: AXUIElement?) throws {
+        guard GamePagePolicy.sameDocument(documentURL, url) else {
+            throw WorkflowFailure.unsafe("Selected game page changed or its URL is unreadable. Restore the selected game tab and start again.")
+        }
+        if let documentElement {
+            guard let element, CFEqual(documentElement, element) else {
+                throw WorkflowFailure.unsafe("Selected game tab changed or reloaded. Review detection and start again.")
+            }
+        }
+    }
+}
+
 enum BrowserWindowDiscovery {
     static let browserBundleIDs: Set<String> = [
         "com.google.Chrome", "com.google.Chrome.beta", "com.google.Chrome.dev", "com.google.Chrome.canary",
@@ -102,17 +130,47 @@ enum BrowserWindowDiscovery {
         return matches.count == 1 ? matches.first : nil
     }
 
-    static func focusedWindowIsGame(_ candidate: BrowserWindowCandidate) -> Bool {
-        guard AXIsProcessTrusted() else { return false }
+    static func bind(_ candidate: BrowserWindowCandidate, among candidates: [BrowserWindowCandidate],
+                     isTrusted: () -> Bool = { AXIsProcessTrusted() },
+                     read: (AXUIElement, CFString) -> CFTypeRef? = attribute) throws -> BrowserWindowBinding {
+        guard isTrusted() else { throw WorkflowFailure.prerequisite("Accessibility access is missing") }
+        let group = candidates.filter { $0.processID == candidate.processID }
+        guard matchingCandidate(group, bounds: candidate.bounds)?.id == candidate.id else {
+            throw WorkflowFailure.prerequisite("Cannot uniquely identify selected game window \(candidate.id). Move overlapping Chrome windows apart, then refresh selection.")
+        }
         let app = AXUIElementCreateApplication(candidate.processID)
-        _ = attribute(app, kAXRoleAttribute as CFString)
-        guard let value = attribute(app, kAXFocusedWindowAttribute as CFString), CFGetTypeID(value) == AXUIElementGetTypeID() else { return false }
-        let window = value as! AXUIElement
-        AXUIElementSetMessagingTimeout(window, 0.15)
-        guard let frame = bounds(window), sameBounds(frame, candidate.bounds),
-              candidate.title?.isEmpty != false || candidate.title == (attribute(window, kAXTitleAttribute as CFString) as? String),
-              GamePagePolicy.allows(activeDocumentURL(window, until: Date().addingTimeInterval(1)).url) else { return false }
-        return true
+        _ = read(app, kAXRoleAttribute as CFString)
+        guard let windows = read(app, kAXWindowsAttribute as CFString) as? [AXUIElement] else {
+            throw WorkflowFailure.prerequisite("Cannot read browser windows through Accessibility")
+        }
+        let matches = windows.filter { window in
+            guard let frame = bounds(window, read: read) else { return false }
+            return sameBounds(frame, candidate.bounds)
+        }
+        guard matches.count == 1, let selected = matches.first else {
+            throw WorkflowFailure.prerequisite("Cannot uniquely match selected game window \(candidate.id) to Chrome. Restore it and move overlapping windows apart, then refresh.")
+        }
+        let document = activeDocumentURL(selected, until: Date().addingTimeInterval(2), read: read)
+        guard GamePagePolicy.allows(document.url), let url = document.url else {
+            throw WorkflowFailure.prerequisite("Selected window \(candidate.id): \(document.reason)")
+        }
+        return BrowserWindowBinding(windowID: candidate.id, processID: candidate.processID,
+                                    windowElement: selected, documentElement: document.element, documentURL: url)
+    }
+
+    static func verify(_ binding: BrowserWindowBinding, isTrusted: () -> Bool = { AXIsProcessTrusted() },
+                       read: (AXUIElement, CFString) -> CFTypeRef? = attribute) throws {
+        guard isTrusted() else { throw WorkflowFailure.unsafe("Accessibility access was revoked") }
+        let app = AXUIElementCreateApplication(binding.processID)
+        guard let value = read(app, kAXFocusedWindowAttribute as CFString),
+              CFGetTypeID(value) == AXUIElementGetTypeID() else {
+            throw WorkflowFailure.unsafe("Cannot verify focused browser window")
+        }
+        let focused = value as! AXUIElement
+        try binding.requireFocusedWindow(focused)
+        let document = activeDocumentURL(focused, until: Date().addingTimeInterval(1),
+                                         requireWebArea: binding.documentElement != nil, read: read)
+        try binding.requireSameDocument(url: document.url, element: document.element)
     }
 
     private static func attribute(_ element: AXUIElement, _ name: CFString) -> CFTypeRef? {
@@ -131,10 +189,15 @@ enum BrowserWindowDiscovery {
     struct DocumentLookup {
         let url: String?
         let reason: String
+        let element: AXUIElement?
+
+        init(url: String?, reason: String, element: AXUIElement? = nil) {
+            self.url = url; self.reason = reason; self.element = element
+        }
     }
 
     static func activeDocumentURL(
-        _ window: AXUIElement, until: Date,
+        _ window: AXUIElement, until: Date, requireWebArea: Bool = false,
         read: (AXUIElement, CFString) -> CFTypeRef? = attribute,
         pause: () -> Void = { Thread.sleep(forTimeInterval: 0.15) }
     ) -> DocumentLookup {
@@ -144,7 +207,9 @@ enum BrowserWindowDiscovery {
         // deadline, instead of silently dropping the window on its first read.
         for attempt in 0..<3 {
             guard Date() < until else { break }
-            if let document = address(read(window, kAXDocumentAttribute as CFString)),
+            // Once a web-area identity is pinned, consistently read that tree.
+            // Newly available window metadata must not look like a tab change.
+            if !requireWebArea, let document = address(read(window, kAXDocumentAttribute as CFString)),
                URL(string: document)?.scheme != nil {
                 return documentLookup(document)
             }
@@ -159,7 +224,7 @@ enum BrowserWindowDiscovery {
                     // missing URL. Never accept an open.mu iframe or page link.
                     if let url = address(read(element, kAXURLAttribute as CFString)),
                        URL(string: url)?.scheme != nil {
-                        return documentLookup(url)
+                        return documentLookup(url, element: element)
                     }
                     reason = "Chrome exposed the active web area without its URL. Wait for the game to load, then refresh."
                     break
@@ -179,15 +244,16 @@ enum BrowserWindowDiscovery {
         return DocumentLookup(url: nil, reason: reason)
     }
 
-    private static func documentLookup(_ url: String) -> DocumentLookup {
+    private static func documentLookup(_ url: String, element: AXUIElement? = nil) -> DocumentLookup {
         DocumentLookup(url: url, reason: GamePagePolicy.allows(url)
             ? "Verified active https://open.mu document."
-            : "Active document is not the allowed https://open.mu origin. Activate the game tab, then refresh.")
+            : "Active document is not the allowed https://open.mu origin. Activate the game tab, then refresh.", element: element)
     }
 
-    private static func bounds(_ element: AXUIElement) -> CGRect? {
-        guard let position = attribute(element, kAXPositionAttribute as CFString), CFGetTypeID(position) == AXValueGetTypeID(),
-              let size = attribute(element, kAXSizeAttribute as CFString), CFGetTypeID(size) == AXValueGetTypeID() else { return nil }
+    private static func bounds(_ element: AXUIElement,
+                               read: (AXUIElement, CFString) -> CFTypeRef? = attribute) -> CGRect? {
+        guard let position = read(element, kAXPositionAttribute as CFString), CFGetTypeID(position) == AXValueGetTypeID(),
+              let size = read(element, kAXSizeAttribute as CFString), CFGetTypeID(size) == AXValueGetTypeID() else { return nil }
         var point = CGPoint.zero, dimensions = CGSize.zero
         // CF types are checked above before bridging.
         guard AXValueGetValue(position as! AXValue, .cgPoint, &point),
