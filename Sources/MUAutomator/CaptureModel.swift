@@ -3,6 +3,7 @@ import ScreenCaptureKit
 import CoreGraphics
 import SwiftUI
 import AutomationCore
+import ApplicationServices
 
 @MainActor
 final class CaptureModel: ObservableObject {
@@ -11,7 +12,7 @@ final class CaptureModel: ObservableObject {
     @Published private(set) var image: CGImage?
     @Published private(set) var capturedAt: Date?
     @Published private(set) var busy = false
-    @Published private(set) var message = "Screen Recording permission is needed to list and capture game windows."
+    @Published private(set) var message = "Screen Recording and Accessibility are needed to find and capture open.mu browser windows."
     @Published private(set) var profile = CalibrationProfile()
     @Published var role: TargetRole = .inventoryPanel
     @Published var expectedText = ""
@@ -99,12 +100,18 @@ final class CaptureModel: ObservableObject {
         stopPreview()
         busy = true
         defer { busy = false }
-        message = "Looking for game windows…"
+        message = "Looking for browser windows whose active page is https://open.mu…"
         discoveryDetails = ""
         let allowed = await Task.detached(priority: .utility) { CGPreflightScreenCaptureAccess() }.value
         guard !Task.isCancelled else { return }
         if !allowed && requestPermission {
             _ = CGRequestScreenCaptureAccess()
+        }
+        let accessibility = await Task.detached(priority: .utility) { AXIsProcessTrusted() }.value
+        guard accessibility else {
+            windows = []; select(nil)
+            message = "Accessibility is required to verify browser URLs. Click Allow Accessibility for URL detection, enable MU Automator, then refresh."
+            return
         }
         // ScreenCaptureKit is the authority: a stale preflight result must not
         // prevent the actual framework from reporting its permission/error state.
@@ -113,19 +120,25 @@ final class CaptureModel: ObservableObject {
             // must still restore/focus the selected game before live automation.
             let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
             try Task.checkCancellation()
-            windows = content.windows.filter {
+            let eligible = content.windows.filter {
                 $0.windowLayer == 0 && $0.frame.width > 0 && $0.frame.height > 0
                 && $0.owningApplication?.processID != ProcessInfo.processInfo.processIdentifier
-            }.sorted {
+            }
+            let candidates = eligible.compactMap(BrowserWindowCandidate.init)
+            let confirmed = await Task.detached(priority: .utility) {
+                BrowserWindowDiscovery.matchingWindowIDs(candidates)
+            }.value
+            try Task.checkCancellation()
+            windows = eligible.filter { confirmed.contains($0.windowID) }.sorted {
                 let left = ($0.owningApplication?.applicationName ?? "") + ($0.title ?? "")
                 let right = ($1.owningApplication?.applicationName ?? "") + ($1.title ?? "")
                 return left == right ? $0.windowID < $1.windowID : left < right
             }
             if let id = selectedID, !windows.contains(where: { $0.windowID == id }) { select(nil) }
-            discoveryDetails = "ScreenCaptureKit returned \(content.windows.count) windows; \(windows.count) selectable. Permission precheck: \(allowed ? "allowed" : "not confirmed")."
+            discoveryDetails = "Checked \(candidates.count) browser windows; \(windows.count) verified open.mu windows. Screen Recording precheck: \(allowed ? "allowed" : "not confirmed")."
             message = windows.isEmpty
-                ? "No selectable windows returned. Open Chrome with the game, enable this app in Screen Recording settings, then quit/reopen MU Automator and refresh."
-                : "Found \(windows.count) windows. Select Chrome below. Restore the game window if it is minimized or on another Space."
+                ? "No verified open.mu window found. Make https://open.mu the active tab in Chrome, allow Screen Recording and Accessibility, then refresh. Windows with unreadable URLs stay hidden."
+                : "Found \(windows.count) open.mu windows. Select the game below. Other websites are hidden."
         } catch is CancellationError {
             message = "Window refresh cancelled."
         } catch {
@@ -139,6 +152,11 @@ final class CaptureModel: ObservableObject {
     func openScreenRecordingSettings() {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    func requestURLPermission() {
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
     }
 
     func capture() async {
@@ -156,6 +174,17 @@ final class CaptureModel: ObservableObject {
             try Task.checkCancellation()
             guard let window = content.windows.first(where: { $0.windowID == id }) else {
                 select(nil); message = "Selected window disappeared. Select it again."; return
+            }
+            guard BrowserWindowCandidate(window) != nil else {
+                select(nil); message = "Selected window is not a supported browser window."; return
+            }
+            let candidates = content.windows.compactMap(BrowserWindowCandidate.init)
+            let confirmed = await Task.detached(priority: .utility) {
+                BrowserWindowDiscovery.matchingWindowIDs(candidates).contains(id)
+            }.value
+            try Task.checkCancellation()
+            guard confirmed, selectedID == id else {
+                select(nil); message = "The selected window's active page is no longer verified as open.mu. Open the game tab and refresh."; return
             }
             let filter = SCContentFilter(desktopIndependentWindow: window)
             let config = SCStreamConfiguration()

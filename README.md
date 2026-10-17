@@ -25,7 +25,7 @@ Dry run is enabled by default. Detect only and the live preview never send input
 
 ## Calibration
 
-1. In Calibration, allow Screen Recording, refresh windows, and select the Chrome game window.
+1. In Calibration, allow Screen Recording, refresh windows, and make open.mu the active tab and select its Chrome window.
 2. Capture a snapshot or enable live preview. Freeze preview before marking targets.
 3. Label `gameViewport` around only the game area. Label controls and state indicators from real examples, using separate screenshots for different dialogs/states. No game coordinates or shortcuts are prefilled.
 4. Drag regions to create local grayscale templates; optionally enter OCR text. Both template and text must match when both are configured. Thresholds are adjustable. Save the calibration as the startup default or as a named profile. Named profiles can be loaded from the menu; saving the default separately controls what loads at launch.
@@ -56,7 +56,7 @@ Configuration, workflow settings, regions and small templates are saved in `~/Li
 
 ## Validation in this cloud environment
 
-The portable core built successfully and all 33 XCTest tests passed with official Swift 6.0.3 in Docker:
+The portable core built successfully and all 35 XCTest tests passed with official Swift 6.0.3 in Docker:
 
 ```sh
 docker run --rm --network none -v "$PWD":/src -w /src \
@@ -82,11 +82,15 @@ sample MUAutomator 5 -file /tmp/MUAutomator-hang.txt
 
 Alternatively use Activity Monitor → MUAutomator → Sample Process. The main-thread call graph identifies the blocking operation; include it when reporting a hang. A process sample is different from a crash report because a hung process has not exited.
 
+## Only open.mu windows are listed
+
+The picker verifies the active document URL through public macOS Accessibility metadata. It accepts HTTPS on the exact `open.mu` host (default port or 443), including versioned game paths. Other domains, misleading titles/links, inactive game tabs, and unreadable URLs are excluded. No browser tab is switched automatically. Make the game the active tab, grant Accessibility using the Calibration button, then refresh. Chrome is the primary target; other listed browsers work only when they expose the required active-document metadata. Capture rechecks the URL; live automation rechecks the focused browser URL before each input operation. No AppleScript, browser extension, private browser API, or extra network request is used.
+
 ## If the window menu is empty
 
 1. Open **System Settings → Privacy & Security → Screen & System Audio Recording** (or **Screen Recording** on older macOS).
 2. Enable the **MU Automator** app you are actually launching. Accessibility permission and Chrome's own permissions do not grant MU Automator screen capture access.
 3. Fully quit and reopen that app bundle, then click **Calibration → Allow capture / Refresh windows**. If necessary, use the settings panel's add button to select `.build/xcode/Build/Products/Release/MUAutomator.app` in your checkout.
-4. Select Chrome from the Window menu. Discovery includes other Spaces; restore/show the actual game before capturing or running automation.
+4. Click **Allow Accessibility for URL detection** and enable MU Automator if needed. Make `https://open.mu` the active tab in Chrome, refresh, and select its window. Discovery includes other Spaces; restore/show the game before capture or live automation.
 
 Use the same `.app` consistently instead of switching between Xcode, `swift run`, and different copies. Rebuilding an ad-hoc signed bundle can invalidate an existing permission grant; reapprove the rebuilt app if needed. Permission is still enforced by macOS. The app now attempts ScreenCaptureKit discovery rather than rejecting it solely on a legacy precheck, and reports returned-window counts or the native error domain/code below the controls.

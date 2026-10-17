@@ -23,11 +23,14 @@ struct CalibrationView: View {
                         Task { await capture.refresh(requestPermission: true) }
                     }
                     Button("Open Screen Recording settings") { capture.openScreenRecordingSettings() }
+                    Button("Allow Accessibility for URL detection") { capture.requestURLPermission() }
                     if capture.busy { ProgressView().controlSize(.small) }
                 }.disabled(capture.busy)
                 VStack(alignment: .leading, spacing: 8) {
-                    Picker("Window", selection: Binding(get: { capture.selectedID }, set: { capture.select($0) })) {
-                        Text("Select a window").tag(Optional<CGWindowID>.none)
+                    Text("Only windows with an active https://open.mu page are listed. Activate the game tab first, then refresh.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Picker("open.mu window", selection: Binding(get: { capture.selectedID }, set: { capture.select($0) })) {
+                        Text("Select an open.mu window").tag(Optional<CGWindowID>.none)
                         ForEach(capture.windows, id: \.windowID) { window in
                             Text("\(window.owningApplication?.applicationName ?? "App"): \(window.title ?? "Untitled") [\(window.windowID)]")
                                 .tag(Optional(window.windowID))

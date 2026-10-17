@@ -1,12 +1,12 @@
 # Prompt audit and completion status
 
-The implementation is **not accepted as complete** against the supplied definition of done. 33 portable XCTest tests passed with Swift 6.0.3 in the pinned official Docker image; macOS compilation, permission behavior, capture alignment, live input and actual-game outcomes have not been validated. Two macOS adapter tests were added but remain unrun. Apple-framework sources passed Swift syntax parsing; Xcode project OpenStep syntax, scheme XML, Info.plist, source membership and shell syntax were checked. These are not macOS compilation. No tests were run on the user's Mac.
+The implementation is **not accepted as complete** against the supplied definition of done. 35 portable XCTest tests passed with Swift 6.0.3 in the pinned official Docker image; macOS compilation, permission behavior, capture alignment, live input and actual-game outcomes have not been validated. Five macOS adapter tests are present but remain unrun. Apple-framework sources passed Swift syntax parsing; Xcode project OpenStep syntax, scheme XML, Info.plist, source membership and shell syntax were checked. These are not macOS compilation. No tests were run on the user's Mac.
 
 | Prompt area | Source implemented | Evidence / remaining gate |
 | --- | --- | --- |
 | Native project and dashboard | Swift package, Xcode app project, dashboard/settings/calibration/route/log views | Linux syntax parsing only for Apple-framework sources; macOS build required |
 | Modes | Jewels-only isolation; full mode respects modules; locked active configuration | Mock banking integration and route-mode isolation tests |
-| Capture | Window selection, snapshots, live preview, permission errors, missing-window handling | macOS adapter execution required |
+| Capture | Only active HTTPS open.mu browser windows are listed, with URL checks before capture/input; snapshots, preview, permission/error diagnostics | Host parsing tests pass; native URL discovery and capture still require macOS verification |
 | Calibration | Relative regions, grayscale templates, thresholds, OCR, exclusion, preview, JSON save/load | Bank-title crop tests from recording pass; macOS Vision adapter tests added but unrun |
 | Banking | Visual preconditions, single transfer, pending/success distinction, strict OCR count/balance deltas, bounded verification, verified panel closure | Mock end-to-end, stale success, disappearance and unverified outcome tests pass; actual success indicator not yet established |
 | Helper | Detect active first, start once, verify active state | Mock active/inactive/missing-button paths pass; real active indicator needs calibration |

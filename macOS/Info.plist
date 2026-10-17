@@ -12,5 +12,5 @@
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSScreenCaptureUsageDescription</key><string>Capture the selected game window to detect calibrated interface targets.</string>
-  <key>NSAccessibilityUsageDescription</key><string>Verify the focused game window and deliver explicitly enabled keyboard and mouse actions.</string>
+  <key>NSAccessibilityUsageDescription</key><string>Verify browser page URLs to show only open.mu windows, check game focus, and deliver explicitly enabled keyboard and mouse actions.</string>
 </dict></plist>

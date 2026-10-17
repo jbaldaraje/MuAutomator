@@ -86,6 +86,8 @@ final class MacWorkflowIO: WorkflowIO {
 
     func observe() async throws -> Observation {
         try checkSafety()
+        try await verifyGamePage()
+        try checkSafety()
         let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
         guard let fresh = content.windows.first(where: { $0.windowID == window.windowID }),
               fresh.title == title, abs(Double(fresh.frame.width / fresh.frame.height) - aspect) < 0.005 else {
@@ -109,6 +111,8 @@ final class MacWorkflowIO: WorkflowIO {
     }
 
     func perform(_ action: GameAction) async throws {
+        try checkSafety()
+        try await verifyGamePage()
         try checkSafety()
         guard CGEventSource.flagsState(.combinedSessionState)
             .intersection([.maskCommand, .maskControl, .maskAlternate, .maskShift]).isEmpty else {
@@ -141,6 +145,17 @@ final class MacWorkflowIO: WorkflowIO {
             try checkSafety()
             down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
         }
+    }
+
+    private func verifyGamePage() async throws {
+        guard let candidate = BrowserWindowCandidate(currentWindow) else {
+            throw WorkflowFailure.unsafe("Selected window is not a supported browser")
+        }
+        let confirmed = await Task.detached(priority: .utility) {
+            BrowserWindowDiscovery.focusedWindowIsGame(candidate)
+        }.value
+        try Task.checkCancellation()
+        guard confirmed else { throw WorkflowFailure.unsafe("Selected browser page is no longer verified as https://open.mu") }
     }
 
     private func click(x: Double, y: Double, source: CGEventSource?) throws {
