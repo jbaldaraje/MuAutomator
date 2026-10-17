@@ -16,6 +16,7 @@ Run these checks on macOS 14+ with Xcode and the actual selected Chrome game win
 
 ## Detection review
 
+- In Calibration, verify all 44 target labels are grouped in workflow order and have descriptions. With Full automation selected and only banking enabled, verify the checklist requires 19 targets; switch the banking-proof option and verify the required proof changes. Enable Helper/recovery/skill evidence and verify their required targets appear. Select an existing target and verify its own OCR phrase and threshold load without changing the saved region. Label counts must not appear as proof of correct detection.
 - Calibrate gameViewport to exclude browser chrome. Capture separate positive and negative examples for every required state/control.
 - Reject false bank matches against helper/warp/loading screens. Verify Withdraw is excluded and overlapping Transfer/Withdraw regions block Start.
 - Verify helper settings and helper-running indicators are distinct. Verify normal gameplay, death, respawn, loading, disconnect, login and character selection are not conflated.

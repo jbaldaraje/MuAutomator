@@ -81,7 +81,9 @@ private struct AppShellView: View {
         case .dashboard:
             DashboardView(model: model, capture: model.capture, permissions: model.permissions)
         case .calibration:
-            ScrollView { CalibrationView(capture: model.capture).padding() }
+            ScrollView {
+                CalibrationView(capture: model.capture, configuration: model.configuration, settings: model.settings).padding()
+            }
                 .disabled(model.locked)
         case .workflows:
             WorkflowSettingsView(model: model)

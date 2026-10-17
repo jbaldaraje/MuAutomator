@@ -14,7 +14,7 @@ final class CaptureModel: ObservableObject {
     @Published private(set) var busy = false
     @Published private(set) var message = "Screen Recording and Accessibility are needed to find and capture open.mu browser windows."
     @Published private(set) var profile = CalibrationProfile()
-    @Published var role: TargetRole = .inventoryPanel
+    @Published var role: TargetRole = .gameViewport
     @Published var expectedText = ""
     @Published var threshold = 0.95
     @Published private(set) var detection: Observation?
