@@ -21,18 +21,18 @@ You can also open `MUAutomator.xcodeproj`, select the shared MUAutomator scheme 
 - **Jewels only:** open inventory and bank, deposit once, wait for a new calibrated success indicator, close panels, then stop. It never starts the helper, rotates skills, moves, or recovers.
 - **Full automation:** run enabled banking/helper modules, monitor gameplay, trigger banking from a configured visual condition with cooldown, run configured skills, and recover through a validated checkpoint route.
 
-**Relaxed gameplay recognition is now the default**, including when loading existing settings. It uses your calibrated action targets without requiring a `normalGameplay` match or general interruption labels at Start. Enable “Strict gameplay recognition” on Dashboard to restore the general-scene requirements. Existing interruption labels still block input when they match; action-target matching, inventory/bank transitions, transfer proof, focus/window binding, permissions and cancellation remain active.
+**Relaxed gameplay recognition is now the default**, including when loading existing settings. It clicks the centers of your saved control regions without requiring button OCR/template matches, a `normalGameplay` match, or general interruption labels at Start. Enable “Strict gameplay recognition” on Dashboard to restore the general-scene requirements. Existing interruption labels still block input when they match; calibrated target presence, inventory/bank transitions, transfer proof, focus/window binding, permissions and cancellation remain active. Strict recognition additionally requires button recognition. Relaxed recognition polls through brief missing panel detections within the action timeout; it never repeats an uncertain transfer.
 
 Dry run is enabled by default. Detect only and the live preview never send input. Start requires dry run off, explicit input consent, reviewed detection, required calibration, and the selected game window in focus after a five-second countdown. Settings lock during execution, pause, recording and startup. A previous unverified result must be acknowledged before a new workflow can start.
 
 ## Calibration
 
-Start with the [jewel-banking calibration guide](docs/CALIBRATION-GUIDE.md), then add Helper, skills and recovery for full automation. Calibration now groups targets in workflow order, explains what to mark for every label, and shows the targets required by the currently selected mode and options. Changing a label also loads that target's OCR/threshold settings instead of carrying them over from the previous label.
+Start with the [jewel-banking calibration guide](docs/CALIBRATION-GUIDE.md), then add Helper, skills and recovery for full automation. Calibration now groups targets in workflow order, explains what to mark for every label, and shows the targets required by the currently selected mode and options. Changing a label loads that target's own OCR/threshold settings. Editing either field immediately updates that saved target in memory; Save as startup default or Save named profile persists it without redrawing. Use image only clears an optional phrase for the selected target. The selected region is highlighted and previewed beside its saved template, and detection rows show each target's expected phrase, actual OCR, raw score and threshold.
 
 1. In Calibration, allow Screen Recording, refresh windows, and make open.mu the active tab and select its Chrome window.
 2. Capture a snapshot or enable live preview. Freeze preview before marking targets.
 3. Label `gameViewport` around only the game area. Label controls and state indicators from real examples, using separate screenshots for different dialogs/states. No game coordinates or shortcuts are prefilled.
-4. Drag regions to create local grayscale templates; optionally enter OCR text. Both template and text must match when both are configured. Thresholds are adjustable. Save the calibration as the startup default or as a named profile. Named profiles can be loaded from the menu; saving the default separately controls what loads at launch.
+4. Drag regions to create local grayscale templates; optionally enter OCR text. In strict recognition, both template and text must match when both are configured. Relaxed state/evidence detection uses the saved image when present, with OCR for OCR-only targets and numeric proof; optional OCR text does not override a valid image match. Relaxed control clicks use their saved positions. Thresholds are adjustable. Save the calibration as the startup default or as a named profile. Named profiles can be loaded from the menu; saving the default separately controls what loads at launch.
 5. Capture fresh positive and negative examples and run Detect only. Inspect templates, scores, OCR and classification. Confirm the review on Dashboard. Calibration/window changes invalidate that confirmation.
 6. Calibrate banking targets including separate Transfer and excluded Withdraw, pending Processing, a reliable success indicator, and close controls. Also calibrate normal gameplay and interruption states (disconnect, login, character selection, loading, death and respawn). Full-mode modules add helper/recovery/route prerequisites. Start reports missing targets.
 
@@ -60,7 +60,7 @@ Configuration, workflow settings, regions and small templates are saved in `~/Li
 
 ## Validation in this cloud environment
 
-The portable core built successfully and all 48 XCTest tests passed with official Swift 6.0.3 in Docker:
+The portable core built successfully and all 59 XCTest tests passed with official Swift 6.0.3 in Docker:
 
 ```sh
 docker run --rm --network none -v "$PWD":/src -w /src \

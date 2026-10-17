@@ -47,8 +47,11 @@ public struct Observation: Sendable {
     public let matches: [TargetRole: Double]
     public let text: [TargetRole: String]
     public let inventory: InventoryEstimate?
-    public init(timestamp: Date = Date(), matches: [TargetRole: Double], text: [TargetRole: String] = [:], inventory: InventoryEstimate? = nil) {
+    public let scores: [TargetRole: Double]
+    public init(timestamp: Date = Date(), matches: [TargetRole: Double], text: [TargetRole: String] = [:],
+                inventory: InventoryEstimate? = nil, scores: [TargetRole: Double] = [:]) {
         self.timestamp = timestamp; self.matches = matches; self.text = text; self.inventory = inventory
+        self.scores = scores
     }
     public func has(_ role: TargetRole) -> Bool {
         guard let score = matches[role] else { return false }
@@ -85,5 +88,45 @@ public struct Observation: Sendable {
                                            .browserLoading, .loadingTransition, .deathIndicator]
         guard !interruptions.contains(where: has) else { return false }
         return allowRespawn || !has(.respawnIndicator)
+    }
+}
+
+public struct OCRTextCandidate: Sendable {
+    public let text: String
+    public let confidence: Double
+    public init(text: String, confidence: Double) { self.text = text; self.confidence = confidence }
+}
+
+public enum OCRTextMatcher {
+    /// Confidence belongs to the matching phrase's lines, not unrelated OCR
+    /// noise elsewhere in the same crop. Multi-line phrases keep the weakest
+    /// confidence among the lines needed to form that phrase.
+    public static func confidence(for expected: String, in candidates: [OCRTextCandidate]) -> Double {
+        let phrase = expected.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !phrase.isEmpty else { return 0 }
+        var best = 0.0
+        for start in candidates.indices {
+            var text = "", score = 1.0
+            for end in start..<candidates.count {
+                let candidate = candidates[end]
+                let confidence = candidate.confidence.isFinite ? max(0, min(1, candidate.confidence)) : 0
+                text += (text.isEmpty ? "" : " ") + candidate.text
+                score = min(score, confidence)
+                if text.range(of: phrase, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
+                    best = max(best, score)
+                    break
+                }
+            }
+        }
+        return best
+    }
+}
+
+public enum TargetRecognition {
+    public static func score(template: Double?, ocr: Double?, numeric: Bool, strict: Bool) -> Double? {
+        if numeric { return ocr }
+        if !strict { return template ?? ocr }
+        if let template, let ocr { return min(template, ocr) }
+        return template ?? ocr
     }
 }

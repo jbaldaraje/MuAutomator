@@ -17,6 +17,14 @@ For a banking-first test in **Full automation**, enable jewel banking in Workflo
 
 With banking enabled and other modules disabled, default relaxed recognition requires **11 labels**: `gameViewport`, nine inventory/bank/processing/closure labels, and one selected success-proof label. Strict gameplay recognition requires **19 labels**, adding `normalGameplay` and seven interruption labels. Label presence is only a checklist item; Detect only review still has to establish that the labels work on real game states. Templates use a fixed window-relative region, so capture each target from the screen where it actually appears.
 
+## Editing labels and checking OCR
+
+Select a target to load its own OCR phrase and threshold. Changes immediately update that target in memory; Save as startup default or Save named profile writes them to disk. Existing rectangles do not need redrawing. Switching labels or loading a profile refreshes the editor from the selected target, so settings do not carry over between labels. If an older profile already contains an unwanted phrase, select that label and edit it or choose Use image only, then save.
+
+The yellow outline and current-crop preview show exactly which saved region is being inspected. Compare that crop with the saved template and the per-label expected phrase, actual OCR, raw score and threshold. Repeated text is possible when different state labels cover the same screen area; target names do not make different pixels. Numeric proof labels always use OCR from their own crop and do not use a fixed expected phrase. Each OCR crop is rendered into its own bitmap; phrase confidence uses the lines containing the requested phrase rather than unrelated low-confidence OCR lines.
+
+In default relaxed recognition, saved control rectangles determine click positions even if button OCR or image matching fails. State/evidence labels use their saved image when available; an old optional phrase does not override the image match. OCR-only labels and numeric counts still use OCR. Live runs skip optional OCR work for image-backed labels, while Detect only can show their actual OCR for diagnosis. Inventory and bank state evidence still determine sequencing, and the chosen transfer proof must still verify success. Brief missing state detections are polled within the action timeout; an uncertain transfer is never clicked again. Strict recognition retains per-button recognition and immediate bank-disappearance checks.
+
 ## Every target label
 
 “Click” means the center of the marked rectangle can receive input. “State”, “Proof” and “Trigger” regions identify visual evidence. The whole game area bounds clicks. Optional route evidence becomes required if it is used by an enabled route or skill.

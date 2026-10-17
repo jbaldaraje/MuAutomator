@@ -102,7 +102,8 @@ final class SessionModel: ObservableObject {
             guard let window = capture.windows.first(where: { $0.windowID == capture.selectedID }) else {
                 throw WorkflowFailure.prerequisite("Select the game window first")
             }
-            try MacWorkflowIO.requireTargets(requiredTargets(routeTest: routeTest), in: capture.profile)
+            try MacWorkflowIO.requireTargets(requiredTargets(routeTest: routeTest), in: capture.profile,
+                                             strictGameplayRecognition: configuration.strictGameplayRecognition)
             if !routeTest && configuration.mode == .fullAutomation && configuration.recoveryEnabled {
                 guard settings.route.validated, !settings.route.steps.isEmpty else {
                     throw WorkflowFailure.prerequisite("Configure and manually validate the recovery route first")

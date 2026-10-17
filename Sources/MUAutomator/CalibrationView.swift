@@ -67,12 +67,22 @@ struct CalibrationView: View {
                         }
                     }.pickerStyle(.menu)
                     targetDescription
-                    TextField("Optional exact OCR phrase (must also match the template)", text: $capture.expectedText)
+                    if capture.role.isNumericEvidence {
+                        Text("Numeric OCR reads this region automatically; keep only one count inside it.").font(.caption)
+                    } else {
+                        HStack {
+                            TextField("Optional OCR phrase for this target", text: $capture.expectedText)
+                            Button("Use image only") { capture.expectedText = "" }
+                                .disabled(capture.expectedText.isEmpty)
+                        }
+                    }
                     HStack {
                         Text("Minimum similarity \(capture.threshold, specifier: "%.2f")")
                         Slider(value: $capture.threshold, in: 0.8...1)
                     }
-                    RegionCanvas(image: image, targets: capture.profile.targets, mark: capture.mark)
+                    Text("Edits update the selected target immediately. Save the profile to persist them; existing rectangles do not need redrawing.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    RegionCanvas(image: image, targets: capture.profile.targets, selected: capture.role, mark: capture.mark)
                         .aspectRatio(CGFloat(image.width) / CGFloat(image.height), contentMode: .fit)
                         .disabled(capture.previewEnabled)
                     if capture.previewEnabled { Text("Freeze preview before marking regions or reviewing detection.").font(.caption) }
@@ -83,7 +93,7 @@ struct CalibrationView: View {
                     Text("\(capture.profile.targets.count) labeled regions")
                     Button("Save as startup default") { capture.save() }
                     Button("Clear regions", role: .destructive) { capture.clear() }
-                    Button("Detect only") { Task { await capture.detect() } }
+                    Button("Detect only") { Task { await capture.detect(strictRecognition: configuration.strictGameplayRecognition) } }
                         .disabled(capture.busy || capture.image == nil || capture.previewEnabled)
                 }
                 if let result = capture.detection {
@@ -97,7 +107,7 @@ struct CalibrationView: View {
                             if let template = target.template, let image = VisionService.preview(template) {
                                 Image(decorative: image, scale: 1).resizable().scaledToFit().frame(width: 72, height: 48)
                             }
-                            Text("\(target.role.rawValue): \(result.matches[target.role].map { String(format: "%.3f", $0) } ?? "no match") • OCR: \(result.text[target.role] ?? "—")")
+                            Text(detectionSummary(target, result))
                                 .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                         }
                     }
@@ -117,15 +127,18 @@ struct CalibrationView: View {
             }.padding(8)
         }
         .onDisappear { capture.stopPreview() }
-        .onChange(of: capture.role) { _, role in
-            let target = capture.profile.targets.first { $0.role == role }
-            capture.expectedText = target?.expectedText ?? ""
-            capture.threshold = target?.threshold ?? 0.95
-        }
     }
 
     private var requiredRoles: Set<TargetRole> {
         CalibrationRequirements.roles(configuration: configuration, settings: settings)
+    }
+
+    private func detectionSummary(_ target: CalibratedTarget, _ result: AutomationCore.Observation) -> String {
+        let match = result.has(target.role) ? "match" : "no match"
+        let score = result.scores[target.role].map { String(format: "%.3f", $0) } ?? "—"
+        let threshold = String(format: "%.2f", target.threshold)
+        let expected = target.role.isNumericEvidence ? "numeric count" : (target.expectedText ?? "image only")
+        return "\(target.role.rawValue): \(match) • score \(score) / \(threshold) • expected: \(expected) • OCR: \(result.text[target.role] ?? "not used")"
     }
 
     private var calibrationPlan: some View {
@@ -175,7 +188,8 @@ struct CalibrationView: View {
 
     private func hasLabel(_ role: TargetRole) -> Bool {
         capture.profile.targets.contains {
-            $0.role == role && (role == .gameViewport || $0.template != nil || !($0.expectedText ?? "").isEmpty)
+            $0.role == role && (role == .gameViewport || (!configuration.strictGameplayRecognition && role.isClickControl)
+                               || $0.template != nil || !($0.expectedText ?? "").isEmpty)
         }
     }
 
@@ -185,6 +199,29 @@ struct CalibrationView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(guide.group.rawValue).font(.caption).foregroundStyle(.secondary)
                 Text(guide.instruction)
+                if !configuration.strictGameplayRecognition && !capture.role.isNumericEvidence {
+                    Text("Relaxed detection uses the saved image when available; an optional OCR phrase is diagnostic. OCR-only targets still use their phrase.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if !configuration.strictGameplayRecognition && capture.role.isClickControl {
+                    Text("Relaxed mode clicks the center of this saved region even when its OCR/template does not match.")
+                        .font(.caption)
+                }
+                if let target = capture.profile.targets.first(where: { $0.role == capture.role }),
+                   let image = capture.image, let cropped = VisionService.crop(image, region: target.region) {
+                    HStack(alignment: .top) {
+                        if let template = target.template, let saved = VisionService.preview(template) {
+                            VStack {
+                                Text("Saved template").font(.caption)
+                                Image(decorative: saved, scale: 1).resizable().scaledToFit().frame(width: 160, height: 80)
+                            }
+                        }
+                        VStack {
+                            Text("Selected region in current snapshot").font(.caption)
+                            Image(decorative: cropped, scale: 1).resizable().scaledToFit().frame(width: 240, height: 80)
+                        }
+                    }
+                }
                 Text(requiredRoles.contains(capture.role)
                      ? "Required before Start with your current options."
                      : "Not required by Start with your current options; check the workflow description above for when this target is needed.")
@@ -197,6 +234,7 @@ struct CalibrationView: View {
 private struct RegionCanvas: View {
     let image: CGImage
     let targets: [CalibratedTarget]
+    let selected: TargetRole
     let mark: (NormalizedRegion) -> Void
     @State private var drag: CGRect?
 
@@ -206,7 +244,8 @@ private struct RegionCanvas: View {
                 Image(decorative: image, scale: 1).resizable()
                 ForEach(targets) { target in
                     let r = target.region
-                    Rectangle().stroke(target.role == .withdrawExcluded ? Color.red : Color.green, lineWidth: 2)
+                    Rectangle().stroke(target.role == .withdrawExcluded ? Color.red
+                                       : (target.role == selected ? Color.yellow : Color.green.opacity(0.35)), lineWidth: 2)
                         .frame(width: r.width * geometry.size.width, height: r.height * geometry.size.height)
                         .overlay(alignment: .topLeading) {
                             Text(target.role.rawValue).font(.caption2).background(.black.opacity(0.8)).foregroundStyle(.white)

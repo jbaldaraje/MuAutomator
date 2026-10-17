@@ -161,7 +161,7 @@ struct DashboardView: View {
                         Toggle("Strict gameplay recognition (require normalGameplay)", isOn: $model.configuration.strictGameplayRecognition)
                         Text(model.configuration.strictGameplayRecognition
                              ? "Strict: general gameplay and interruption labels are required."
-                             : "Relaxed: run using your calibrated action targets without a normalGameplay match. Window focus, explicit interruption matches and transfer verification still apply.")
+                             : "Relaxed: click your saved control regions without button OCR/template or normalGameplay matches. Panel states, window focus, explicit interruptions and transfer results are still checked.")
                             .font(.caption).foregroundStyle(.secondary)
                         Toggle("I explicitly allow live mouse and keyboard input to my selected game window", isOn: $model.liveConsent)
                         if model.runner.stage == .waitingForManualIntervention {

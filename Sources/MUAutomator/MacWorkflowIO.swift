@@ -45,10 +45,12 @@ final class MacWorkflowIO: WorkflowIO {
 
     var captureBounds: CGRect { currentWindow.frame }
 
-    static func requireTargets(_ roles: Set<TargetRole>, in profile: CalibrationProfile) throws {
+    static func requireTargets(_ roles: Set<TargetRole>, in profile: CalibrationProfile,
+                               strictGameplayRecognition: Bool = true) throws {
         for role in roles.sorted(by: { $0.rawValue < $1.rawValue }) {
             guard let target = profile.targets.first(where: { $0.role == role }),
-                  role == .gameViewport || target.template != nil || !(target.expectedText ?? "").isEmpty else {
+                  role == .gameViewport || (!strictGameplayRecognition && role.isClickControl)
+                    || target.template != nil || !(target.expectedText ?? "").isEmpty else {
                 throw WorkflowFailure.prerequisite("Calibrate and dry-run detect \(role.rawValue) first")
             }
         }
@@ -59,6 +61,10 @@ final class MacWorkflowIO: WorkflowIO {
                 throw WorkflowFailure.prerequisite("Transfer and excluded Withdraw regions must be separate")
             }
         }
+    }
+
+    func hasCalibratedTarget(_ role: TargetRole) -> Bool {
+        role != .withdrawExcluded && profile.targets.contains { $0.role == role }
     }
 
     func checkSafety() throws {
@@ -127,8 +133,10 @@ final class MacWorkflowIO: WorkflowIO {
         let time = Date()
         try checkSafety()
         let profile = self.profile
+        let strict = strictGameplayRecognition
         let result = try await Task.detached(priority: .userInitiated) {
-            try VisionService.detect(image: image, profile: profile, timestamp: time)
+            try VisionService.detect(image: image, profile: profile, timestamp: time,
+                                     strictRecognition: strict, includeOCRDiagnostics: false)
         }.value
         try checkSafety()
         lastObservation = result
@@ -152,7 +160,7 @@ final class MacWorkflowIO: WorkflowIO {
         let source = CGEventSource(stateID: .hidSystemState)
         switch action {
         case .click(let role):
-            guard role != .withdrawExcluded, observation.has(role),
+            guard role != .withdrawExcluded, (!strictGameplayRecognition || observation.has(role)),
                   let target = profile.targets.first(where: { $0.role == role }) else {
                 throw WorkflowFailure.unsafe("Unverified or excluded click target")
             }

@@ -14,9 +14,11 @@ final class CaptureModel: ObservableObject {
     @Published private(set) var busy = false
     @Published private(set) var message = "Screen Recording and Accessibility are needed to find and capture open.mu browser windows."
     @Published private(set) var profile = CalibrationProfile()
-    @Published var role: TargetRole = .gameViewport
-    @Published var expectedText = ""
-    @Published var threshold = 0.95
+    @Published var role: TargetRole = .gameViewport {
+        didSet { if oldValue != role { loadTargetSettings() } }
+    }
+    @Published var expectedText = "" { didSet { updateTargetSettings() } }
+    @Published var threshold = 0.95 { didSet { updateTargetSettings() } }
     @Published private(set) var detection: Observation?
     @Published private(set) var previewEnabled = false
     @Published var profileName = "Default"
@@ -24,18 +26,45 @@ final class CaptureModel: ObservableObject {
     @Published private(set) var discoveryDetails = ""
     private var previewTask: Task<Void, Never>?
     private let profileURL: URL
+    private var loadingTargetSettings = false
+    private var detectionRevision = 0
 
-    init() {
-        profileURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    init(profileURL: URL? = nil) {
+        self.profileURL = profileURL ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("MUAutomator/calibration.json")
-        if FileManager.default.fileExists(atPath: profileURL.path) {
+        if FileManager.default.fileExists(atPath: self.profileURL.path) {
             do {
-                let loaded = try JSONDecoder().decode(CalibrationProfile.self, from: Data(contentsOf: profileURL))
+                let loaded = try JSONDecoder().decode(CalibrationProfile.self, from: Data(contentsOf: self.profileURL))
                 try loaded.validate()
                 profile = loaded
             } catch { message = "Calibration could not be loaded: \(error)" }
         }
         refreshProfiles()
+        loadTargetSettings()
+    }
+
+    private func invalidateDetection() {
+        detectionRevision += 1
+        detection = nil
+    }
+
+    private func loadTargetSettings() {
+        loadingTargetSettings = true
+        defer { loadingTargetSettings = false }
+        let target = profile.targets.first { $0.role == role }
+        expectedText = target?.expectedText ?? ""
+        threshold = target?.threshold ?? 0.95
+    }
+
+    private func updateTargetSettings() {
+        guard !loadingTargetSettings, let index = profile.targets.firstIndex(where: { $0.role == role }) else { return }
+        let phrase = expectedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value: String? = phrase.isEmpty ? nil : phrase
+        guard profile.targets[index].expectedText != value || profile.targets[index].threshold != threshold else { return }
+        profile.targets[index].expectedText = value
+        profile.targets[index].threshold = threshold
+        invalidateDetection()
+        message = "Updated \(role.rawValue) settings. Save the profile to keep them after relaunch."
     }
 
     private func refreshProfiles() {
@@ -65,7 +94,7 @@ final class CaptureModel: ObservableObject {
         do {
             let value = try JSONDecoder().decode(CalibrationProfile.self, from: Data(contentsOf: namedURL()))
             try value.validate()
-            stopPreview(); profile = value; image = nil; capturedAt = nil; detection = nil
+            stopPreview(); profile = value; image = nil; capturedAt = nil; invalidateDetection(); loadTargetSettings()
             message = "Profile loaded. Recapture and review detection before live input."
         } catch { message = error.localizedDescription }
     }
@@ -75,7 +104,7 @@ final class CaptureModel: ObservableObject {
         selectedID = id
         image = nil
         capturedAt = nil
-        detection = nil
+        invalidateDetection()
     }
 
     func startPreview() {
@@ -165,7 +194,7 @@ final class CaptureModel: ObservableObject {
         defer { busy = false }
         // Keep the last frame mounted while a new one is captured. Removing it
         // each tick tears down/rebuilds the calibration canvas during preview.
-        detection = nil
+        invalidateDetection()
         do {
             // Resolve the window again; never capture from a stale selection object.
             // The framework enforces Screen Recording access for both discovery
@@ -220,29 +249,38 @@ final class CaptureModel: ObservableObject {
         profile.targets.removeAll { $0.role == role }
         profile.targets.append(.init(role: role, region: region, template: template,
                                     expectedText: expectedText.isEmpty ? nil : expectedText, threshold: threshold))
-        detection = nil
+        invalidateDetection()
         message = "Created template for \(role.rawValue). Save, then test against a fresh screenshot."
     }
 
     func setGrid(columns: Int, rows: Int) {
         guard (1...16).contains(columns), (1...16).contains(rows) else { return }
-        profile.inventoryColumns = columns; profile.inventoryRows = rows; detection = nil
+        profile.inventoryColumns = columns; profile.inventoryRows = rows; invalidateDetection()
     }
 
-    func detect() async {
+    func detect(strictRecognition: Bool = true) async {
         guard !busy, let image, let capturedAt else { return }
         busy = true
         defer { busy = false }
         let profile = self.profile
+        let revision = detectionRevision
         do {
-            detection = try await Task.detached(priority: .userInitiated) {
-                try VisionService.detect(image: image, profile: profile, timestamp: capturedAt)
+            let result = try await Task.detached(priority: .userInitiated) {
+                try VisionService.detect(image: image, profile: profile, timestamp: capturedAt, strictRecognition: strictRecognition)
             }.value
+            guard !Task.isCancelled, revision == detectionRevision else {
+                message = "Calibration changed during detection. Run Detect only again."
+                return
+            }
+            detection = result
             message = "Dry-run detection finished; no input sent. Review each match and OCR text."
         } catch { message = "Detection failed: \(error.localizedDescription)" }
     }
 
-    func clear() { profile = .init(); message = "Calibration cleared in memory. Save to persist." }
+    func clear() {
+        profile = .init(); invalidateDetection(); loadTargetSettings()
+        message = "Calibration cleared in memory. Save to persist."
+    }
 
     func save() {
         do {
