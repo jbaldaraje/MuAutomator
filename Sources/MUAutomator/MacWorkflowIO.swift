@@ -12,6 +12,17 @@ final class MacWorkflowIO: WorkflowIO {
     private var binding: BrowserWindowBinding?
     private let aspect: Double
     private let strictGameplayRecognition: Bool
+    private var lastFrame: CGImage?
+    var onFrame: ((CGImage, Observation) -> Void)?
+    var onClick: ((String, CGImage?) -> Void)?
+    private var clickDescription: String?
+
+    func describeAction(_ action: GameAction) -> String {
+        switch action {
+        case .click, .point: return clickDescription ?? String(describing: action)
+        case .key: return String(describing: action)
+        }
+    }
 
     init(window: SCWindow, profile: CalibrationProfile, strictGameplayRecognition: Bool = false) throws {
         try profile.validate()
@@ -140,6 +151,8 @@ final class MacWorkflowIO: WorkflowIO {
         }.value
         try checkSafety()
         lastObservation = result
+        lastFrame = image
+        onFrame?(image, result)
         return result
     }
 
@@ -166,9 +179,9 @@ final class MacWorkflowIO: WorkflowIO {
             }
             if role == .transferButton, let excluded = profile.targets.first(where: { $0.role == .withdrawExcluded }),
                target.region.overlaps(excluded.region) { throw WorkflowFailure.unsafe("Transfer overlaps Withdraw") }
-            try click(x: target.region.x + target.region.width / 2,
-                      y: target.region.y + target.region.height / 2, source: source)
-        case .point(let x, let y): try click(x: x, y: y, source: source)
+            let position = try target.effectiveClickPoint
+            try await click(x: position.x, y: position.y, source: source, label: role.rawValue)
+        case .point(let x, let y): try await click(x: x, y: y, source: source, label: "route point")
         case .key(let code):
             guard code < 128, observation.permitsInput(strictGameplayRecognition: strictGameplayRecognition) else {
                 throw WorkflowFailure.unsafe("Unsafe keyboard event")
@@ -190,7 +203,7 @@ final class MacWorkflowIO: WorkflowIO {
         try Task.checkCancellation()
     }
 
-    private func click(x: Double, y: Double, source: CGEventSource?) throws {
+    private func click(x: Double, y: Double, source: CGEventSource?, label: String) async throws {
         guard x.isFinite, y.isFinite, (0...1).contains(x), (0...1).contains(y) else {
             throw WorkflowFailure.unsafe("Click outside selected window")
         }
@@ -205,11 +218,64 @@ final class MacWorkflowIO: WorkflowIO {
         }
         let point = CGPoint(x: currentWindow.frame.minX + x * currentWindow.frame.width,
                             y: currentWindow.frame.minY + y * currentWindow.frame.height)
-        guard let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left),
+        let description = String(format: "%@ → window %u, window position %.4f, %.4f; screen point %.1f, %.1f",
+                                 label, window.windowID, x, y, point.x, point.y)
+        clickDescription = description
+        onClick?(description, lastFrame)
+        try await MacMouseInput.click(at: point, source: source) {
+            try self.checkSafety()
+            guard Self.topWindow(at: point) == self.window.windowID else {
+                throw WorkflowFailure.unsafe("The click point is covered by another window; bring the selected game to the front")
+            }
+        }
+    }
+
+    static func topWindow(at point: CGPoint) -> CGWindowID? {
+        guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+                as? [[String: Any]] else { return nil }
+        return topWindow(at: point, windows: windows)
+    }
+
+    static func topWindow(at point: CGPoint, windows: [[String: Any]]) -> CGWindowID? {
+        // Core Graphics returns front-to-back order and uses the same global,
+        // top-left coordinate space as CGEvent. Negative display origins are valid.
+        for info in windows {
+            guard (info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue != 0,
+                  let bounds = info[kCGWindowBounds as String] as? NSDictionary,
+                  let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary), rect.contains(point),
+                  let id = info[kCGWindowNumber as String] as? NSNumber else { continue }
+            return id.uint32Value
+        }
+        return nil
+    }
+}
+
+@MainActor
+enum MacMouseInput {
+    static func click(at point: CGPoint, source: CGEventSource?,
+                      settleNanoseconds: UInt64 = 60_000_000, holdNanoseconds: UInt64 = 50_000_000,
+                      post: (CGEvent) -> Void = { $0.post(tap: .cghidEventTap) },
+                      check: () throws -> Void) async throws {
+        guard let move = CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left),
+              let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left),
               let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left) else {
             throw WorkflowFailure.unsafe("Could not create mouse events")
         }
-        try checkSafety()
-        down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
+        down.setIntegerValueField(.mouseEventClickState, value: 1)
+        up.setIntegerValueField(.mouseEventClickState, value: 1)
+        try Task.checkCancellation(); try check()
+        post(move)
+        // Browser canvas games may consume the position from mousemove and
+        // sample button state on a later render tick. A down/up pair alone can
+        // use the previous pointer location or disappear between game frames.
+        try await Task.sleep(nanoseconds: settleNanoseconds)
+        try Task.checkCancellation(); try check()
+        post(down)
+        // Always release a delivered press, including cancellation/focus loss.
+        do {
+            defer { post(up) }
+            try await Task.sleep(nanoseconds: holdNanoseconds)
+        }
+        try Task.checkCancellation(); try check()
     }
 }

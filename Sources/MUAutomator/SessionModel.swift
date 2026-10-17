@@ -12,6 +12,11 @@ final class SessionModel: ObservableObject {
     @Published var failureReviewed = false
     @Published private(set) var arming = false
     @Published private(set) var reviewed = false
+    @Published private(set) var lastClick: String?
+    @Published private(set) var beforeClickFrame: CGImage?
+    @Published private(set) var lastRunFrame: CGImage?
+    @Published private(set) var lastRunObservation: Observation?
+    @Published private(set) var lastRunProfile = CalibrationProfile()
     let permissions = PermissionStatusModel()
     let capture = CaptureModel()
     let runner = AutomationCoordinator()
@@ -91,7 +96,7 @@ final class SessionModel: ObservableObject {
     }
 
     func arm(routeTest: Bool = false) {
-        guard !locked else { return }
+        guard !locked, !capture.busy else { return }
         do {
             try configuration.validate(); try settings.validate()
             if runner.stage == .waitingForManualIntervention && !failureReviewed {
@@ -111,6 +116,7 @@ final class SessionModel: ObservableObject {
             }
             let io = try MacWorkflowIO(window: window, profile: capture.profile,
                                        strictGameplayRecognition: configuration.strictGameplayRecognition)
+            configureDiagnostics(io)
             capture.stopPreview()
             save()
             failureReviewed = false
@@ -128,6 +134,49 @@ final class SessionModel: ObservableObject {
                 } catch is CancellationError { error = "Start cancelled" }
                 catch { self.error = error.localizedDescription }
                 arming = false; armTask = nil
+            }
+        } catch { self.error = error.localizedDescription }
+    }
+
+    private func configureDiagnostics(_ io: MacWorkflowIO) {
+        lastClick = nil; beforeClickFrame = nil; lastRunFrame = nil; lastRunObservation = nil
+        lastRunProfile = io.profile
+        io.onFrame = { [weak self] image, observation in
+            self?.lastRunFrame = image; self?.lastRunObservation = observation
+        }
+        io.onClick = { [weak self] description, image in
+            self?.lastClick = description; self?.beforeClickFrame = image
+        }
+    }
+
+    func testInventoryClick() {
+        guard !locked, !capture.busy else { return }
+        do {
+            guard liveConsent, !configuration.dryRun,
+                  let window = capture.windows.first(where: { $0.windowID == capture.selectedID }),
+                  capture.profile.targets.contains(where: { $0.role == .inventoryControl }) else {
+                throw WorkflowFailure.prerequisite("Select the game, label inventoryControl, and allow live input first")
+            }
+            let io = try MacWorkflowIO(window: window, profile: capture.profile,
+                                       strictGameplayRecognition: configuration.strictGameplayRecognition)
+            configureDiagnostics(io)
+            capture.stopPreview(); arming = true
+            error = "Inventory click test in 5 seconds: focus the selected game. Sends one click; it may open or close inventory."
+            armTask = Task { [weak self] in
+                guard let self else { return }
+                defer { arming = false; armTask = nil }
+                do {
+                    try await Task.sleep(nanoseconds: 5_000_000_000)
+                    try await io.prepareSelectedWindow()
+                    _ = try await io.observe()
+                    try await io.perform(.click(.inventoryControl))
+                    try await Task.sleep(nanoseconds: 500_000_000)
+                    let result = try await io.observe()
+                    error = result.has(.inventoryPanel)
+                        ? "Single-click test: inventoryPanel recognized. No banking actions were sent."
+                        : "Single-click test finished. inventoryPanel was not recognized. Compare the before/after frames below; no banking actions were sent."
+                } catch is CancellationError { error = "Click test cancelled" }
+                catch { self.error = error.localizedDescription }
             }
         } catch { self.error = error.localizedDescription }
     }
@@ -166,9 +215,10 @@ final class SessionModel: ObservableObject {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             let text = runner.events.map { event in
-                "\(event.timestamp.ISO8601Format()) | \(event.previous.rawValue) → \(event.stage.rawValue) | \(String(format: "%.2f", event.elapsed))s | \(event.message) | \(event.observation?.state.rawValue ?? "unknown") | \(event.observation?.matches.description ?? "")"
+                "\(event.timestamp.ISO8601Format()) | \(event.previous.rawValue) → \(event.stage.rawValue) | \(String(format: "%.2f", event.elapsed))s | \(event.message) | \(event.observation?.state.rawValue ?? "unknown") | matches: \(event.observation?.matches.description ?? "") | scores: \(event.observation?.scores.description ?? "") | OCR: \(event.observation?.text.description ?? "")"
             }.joined(separator: "\n")
-            try text.write(to: url, atomically: true, encoding: .utf8)
+            let report = "Last attempted click: \(lastClick ?? "none")\n" + text
+            try report.write(to: url, atomically: true, encoding: .utf8)
         } catch { self.error = error.localizedDescription }
     }
 }

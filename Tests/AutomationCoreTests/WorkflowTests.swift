@@ -7,6 +7,7 @@ private final class FakeIO: WorkflowIO {
     var actions: [GameAction] = []
     var unsafe = false
     var texts: [TargetRole: String] = [:]
+    var scores: [TargetRole: Double] = [:]
     var configuredTargets: Set<TargetRole> = []
     var onAction: ((GameAction) -> Void)?
     func checkSafety() throws {
@@ -16,7 +17,7 @@ private final class FakeIO: WorkflowIO {
     func observe() async throws -> Observation {
         try checkSafety()
         let roles = frames.count > 1 ? frames.removeFirst() : (frames.first ?? [])
-        return Observation(matches: Dictionary(uniqueKeysWithValues: roles.map { ($0, 0.99) }), text: texts)
+        return Observation(matches: Dictionary(uniqueKeysWithValues: roles.map { ($0, 0.99) }), text: texts, scores: scores)
     }
     func perform(_ action: GameAction) async throws {
         try Task.checkCancellation(); try checkSafety()
@@ -25,6 +26,20 @@ private final class FakeIO: WorkflowIO {
 }
 
 final class WorkflowTests: XCTestCase {
+    @MainActor func testMissedInventoryClickReportsPanelScoreWithoutOpeningBankOrRepeatingClick() async throws {
+        let io = FakeIO(); io.frames = [[]]; io.configuredTargets = [.inventoryControl]
+        io.scores = [.inventoryPanel: 0.42]
+        var config = AutomationConfiguration(); config.dryRun = false
+        var settings = WorkflowSettings(); settings.actionTimeoutSeconds = 0.1; settings.pollSeconds = 0.01
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await finish(runner)
+        XCTAssertEqual(runner.stage, .waitingForManualIntervention)
+        XCTAssertEqual(io.actions, [.click(.inventoryControl)])
+        XCTAssertTrue(runner.lastError?.contains("inventoryPanel score: 0.420") == true)
+        XCTAssertNil(runner.lastVerifiedAction)
+    }
+
     func testTemplateSimilarityAndInvalidImages() {
         let black = GrayImage(width: 2, height: 2, pixels: [0,0,0,0])
         let white = GrayImage(width: 2, height: 2, pixels: [255,255,255,255])

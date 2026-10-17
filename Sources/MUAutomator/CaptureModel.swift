@@ -258,6 +258,49 @@ final class CaptureModel: ObservableObject {
         profile.inventoryColumns = columns; profile.inventoryRows = rows; invalidateDetection()
     }
 
+    func setClickPoint(_ point: CalibratedClickPoint?) throws {
+        guard role.isClickControl, let index = profile.targets.firstIndex(where: { $0.role == role }) else {
+            throw WorkflowFailure.prerequisite("Label this control first")
+        }
+        try point?.validate()
+        if let point {
+            guard let viewport = profile.targets.first(where: { $0.role == .gameViewport }),
+                  viewport.region.contains(x: point.x, y: point.y) else {
+                throw WorkflowFailure.prerequisite("Place the cursor inside the calibrated game area")
+            }
+            if let excluded = profile.targets.first(where: { $0.role == .withdrawExcluded }),
+               excluded.region.contains(x: point.x, y: point.y) {
+                throw WorkflowFailure.prerequisite("The cursor is inside the excluded Withdraw area")
+            }
+        }
+        profile.targets[index].clickPoint = point
+        invalidateDetection()
+        message = point == nil ? "Using the rectangle center for \(role.rawValue). Save the profile."
+            : "Saved cursor position for \(role.rawValue) in memory. Other regions and templates are unchanged. Save the profile."
+    }
+
+    func locateClickFromCursor() async {
+        guard !busy, role.isClickControl,
+              let window = windows.first(where: { $0.windowID == selectedID }) else { return }
+        stopPreview(); busy = true
+        defer { busy = false }
+        message = "5 seconds: focus the selected game and place the cursor over \(role.rawValue). No click will be sent."
+        do {
+            let selectedRole = role
+            let io = try MacWorkflowIO(window: window, profile: profile)
+            try await Task.sleep(nanoseconds: 5_000_000_000)
+            try await io.prepareSelectedWindow()
+            guard role == selectedRole, selectedID == window.windowID,
+                  let cursor = CGEvent(source: nil)?.location,
+                  io.captureBounds.contains(cursor), MacWorkflowIO.topWindow(at: cursor) == window.windowID else {
+                throw WorkflowFailure.prerequisite("Cursor is not over the selected game window; try again")
+            }
+            let bounds = io.captureBounds
+            try setClickPoint(CalibratedClickPoint(x: (cursor.x - bounds.minX) / bounds.width,
+                                                 y: (cursor.y - bounds.minY) / bounds.height))
+        } catch { message = error.localizedDescription }
+    }
+
     func detect(strictRecognition: Bool = true) async {
         guard !busy, let image, let capturedAt else { return }
         busy = true

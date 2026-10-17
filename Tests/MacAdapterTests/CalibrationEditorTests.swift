@@ -3,6 +3,25 @@ import AutomationCore
 @testable import MUAutomator
 
 final class CalibrationEditorTests: XCTestCase {
+    @MainActor func testCursorPositionChangesOnlySelectedClickAndPersists() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = try fixture(in: directory)
+        var profile = try JSONDecoder().decode(CalibrationProfile.self, from: Data(contentsOf: url))
+        profile.targets.append(.init(role: .gameViewport, region: try NormalizedRegion(x: 0, y: 0, width: 1, height: 1)))
+        try JSONEncoder().encode(profile).write(to: url)
+        let model = CaptureModel(profileURL: url); model.role = .inventoryControl
+        let original = model.profile.targets[0]
+        try model.setClickPoint(CalibratedClickPoint(x: 0.7, y: 0.8)); model.save()
+        let reloaded = CaptureModel(profileURL: url)
+        XCTAssertEqual(reloaded.profile.targets[0].clickPoint, try CalibratedClickPoint(x: 0.7, y: 0.8))
+        XCTAssertEqual(reloaded.profile.targets[0].region, original.region)
+        XCTAssertEqual(reloaded.profile.targets[0].expectedText, original.expectedText)
+        XCTAssertNil(reloaded.profile.targets[1].clickPoint)
+        try model.setClickPoint(nil)
+        XCTAssertNil(model.profile.targets[0].clickPoint)
+    }
+
     @MainActor func testEditingExistingTargetPersistsWithoutRedrawingAndDoesNotChangeOtherTarget() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

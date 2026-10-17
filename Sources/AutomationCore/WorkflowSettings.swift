@@ -142,8 +142,10 @@ public protocol WorkflowIO: AnyObject {
     func perform(_ action: GameAction) async throws
     func checkSafety() throws
     func hasCalibratedTarget(_ role: TargetRole) -> Bool
+    func describeAction(_ action: GameAction) -> String
 }
 
 public extension WorkflowIO {
     func hasCalibratedTarget(_ role: TargetRole) -> Bool { false }
+    func describeAction(_ action: GameAction) -> String { String(describing: action) }
 }

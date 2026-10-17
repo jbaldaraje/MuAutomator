@@ -53,6 +53,19 @@ public struct NormalizedRegion: Codable, Equatable, Sendable {
 
 public enum CalibrationError: Error { case invalidRegion, invalidProfile }
 
+/// A click position measured in the actual window, independent of screenshot padding.
+public struct CalibratedClickPoint: Codable, Equatable, Sendable {
+    public let x: Double
+    public let y: Double
+    public init(x: Double, y: Double) throws {
+        guard x.isFinite, y.isFinite, (0...1).contains(x), (0...1).contains(y) else {
+            throw CalibrationError.invalidRegion
+        }
+        self.x = x; self.y = y
+    }
+    public func validate() throws { _ = try Self(x: x, y: y) }
+}
+
 public struct CalibratedTarget: Codable, Identifiable, Sendable {
     public var id: TargetRole { role }
     public let role: TargetRole
@@ -60,13 +73,19 @@ public struct CalibratedTarget: Codable, Identifiable, Sendable {
     public var template: GrayImage?
     public var expectedText: String?
     public var threshold: Double = 0.95
+    public var clickPoint: CalibratedClickPoint?
+    public var effectiveClickPoint: CalibratedClickPoint {
+        // Regions have already been validated by the profile before live input.
+        get throws { try clickPoint ?? CalibratedClickPoint(x: region.x + region.width / 2, y: region.y + region.height / 2) }
+    }
     public init(role: TargetRole, region: NormalizedRegion, template: GrayImage? = nil,
-                expectedText: String? = nil, threshold: Double = 0.95) {
+                expectedText: String? = nil, threshold: Double = 0.95, clickPoint: CalibratedClickPoint? = nil) {
         self.role = role; self.region = region; self.template = template
         self.expectedText = expectedText; self.threshold = threshold
+        self.clickPoint = clickPoint
     }
 
-    private enum CodingKeys: String, CodingKey { case role, region, template, expectedText, threshold }
+    private enum CodingKeys: String, CodingKey { case role, region, template, expectedText, threshold, clickPoint }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         role = try values.decode(TargetRole.self, forKey: .role)
@@ -74,6 +93,7 @@ public struct CalibratedTarget: Codable, Identifiable, Sendable {
         template = try values.decodeIfPresent(GrayImage.self, forKey: .template)
         expectedText = try values.decodeIfPresent(String.self, forKey: .expectedText)
         threshold = try values.decodeIfPresent(Double.self, forKey: .threshold) ?? 0.95
+        clickPoint = try values.decodeIfPresent(CalibratedClickPoint.self, forKey: .clickPoint)
     }
 }
 
@@ -95,6 +115,7 @@ public struct CalibrationProfile: Codable, Sendable {
         guard (1...16).contains(inventoryColumns ?? 8), (1...16).contains(inventoryRows ?? 8) else { throw CalibrationError.invalidProfile }
         for target in targets {
             try target.region.validate()
+            try target.clickPoint?.validate()
             guard target.threshold.isFinite, (0.8...1).contains(target.threshold) else { throw CalibrationError.invalidProfile }
             try target.template?.validate()
         }
