@@ -22,12 +22,14 @@ struct WorkflowSettingsView: View {
                             Picker("Transfer verification", selection: $model.settings.bankingVerification) {
                                 ForEach(BankingVerificationMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                             }
-                            Picker("Numeric format", selection: $model.settings.countFormat) {
-                                ForEach(CountFormat.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                            }
                             Text("Use a new success indicator or a calibrated reliable count change. Numeric regions must contain only one count in the selected format. Processing, unchanged counts and dialog closure are not success. Uncertain transfers are never clicked again automatically.")
                                 .font(.caption)
                         }
+                        Picker("Numeric format", selection: $model.settings.countFormat) {
+                            ForEach(CountFormat.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                        }
+                        Text("Dashboard balances use bankTitle and bankBalanceText in either input mode. Keep the bank visible for at least two OCR reads before and after depositing. An unchanged number does not confirm an amount added.")
+                            .font(.caption).foregroundStyle(.secondary)
                         Toggle("Monitor calibrated banking-trigger indicator (full mode)", isOn: $model.settings.inventoryMonitoringEnabled)
                         numeric("Minimum time between banking attempts (seconds)", value: $model.settings.bankingCooldownSeconds)
                         Text("The optional bankingTrigger label can start another banking cycle in full mode. Turn the monitor off while testing the recording.")

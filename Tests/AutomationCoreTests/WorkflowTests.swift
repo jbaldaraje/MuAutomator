@@ -1176,4 +1176,78 @@ final class WorkflowTests: XCTestCase {
         XCTAssertEqual(runner.stage, .completed)
         XCTAssertEqual(io.actions, [.click(.transferButton), .click(.bankClose), .click(.inventoryClose)])
     }
+    @MainActor func testVisualCollectionReportsBankBalanceAndIncrease() async throws {
+        let io = FakeIO()
+        io.frames = [[.inventoryPanel, .bankTitle, .transferButton, .bankClose, .bankBalanceText]]
+        io.texts = [.bankBalanceText: "100"]
+        io.onAction = { action in
+            if action == .click(.transferButton) { io.texts[.bankBalanceText] = "125" }
+            if action == .click(.bankClose) { io.frames = [[.inventoryPanel, .inventoryClose]] }
+            if action == .click(.inventoryClose) { io.frames = [[]] }
+        }
+        var config = AutomationConfiguration(); config.dryRun = false
+        var settings = WorkflowSettings(); settings.bankingVerification = .bankBalanceIncrease
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await finish(runner)
+        XCTAssertEqual(runner.stage, .completed)
+        XCTAssertEqual(runner.bankBalanceReading?.balance, 125)
+        XCTAssertEqual(runner.bankBalanceReading?.added, 25)
+        XCTAssertEqual(io.actions, [.click(.transferButton), .click(.bankClose), .click(.inventoryClose)])
+    }
+
+    @MainActor func testRecordedCollectionReportsObservedBalanceWithoutClaimingVerifiedTransfer() async throws {
+        let io = FakeIO()
+        io.frames = [[.bankTitle, .bankBalanceText]]
+        io.texts = [.bankBalanceText: "100"]
+        io.onAction = { _ in io.texts[.bankBalanceText] = "125" }
+        var config = AutomationConfiguration(); config.dryRun = false
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput
+        var macro = recording([.key(12)])
+        macro.steps[0].delayBeforeSeconds = 0.05
+        macro.tailDelaySeconds = 0.05
+        settings.bankingRecording = macro; settings.pollSeconds = 0.01
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await finish(runner)
+        XCTAssertEqual(runner.stage, .completed)
+        XCTAssertEqual(runner.bankBalanceReading?.balance, 125)
+        XCTAssertEqual(runner.bankBalanceReading?.added, 25)
+        XCTAssertTrue(runner.events.last?.message.contains("not visually verified") == true)
+
+        // A later collection with no numeric evidence must retain the old reading,
+        // visibly flagging that it could not be refreshed rather than inventing zero.
+        let previous = runner.bankBalanceReading
+        io.frames = [[]]
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await finish(runner)
+        XCTAssertEqual(runner.bankBalanceReading, previous)
+        XCTAssertTrue(runner.bankBalanceStatus.contains("Couldn’t confirm"))
+
+        io.frames = [[.bankTitle, .bankBalanceText]]
+        io.texts = [.bankBalanceText: "1000"]
+        io.onAction = { _ in io.texts[.bankBalanceText] = "1025" }
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await finish(runner)
+        XCTAssertEqual(runner.bankBalanceReading?.balance, 1025)
+        XCTAssertEqual(runner.bankBalanceReading?.added, 25, "Each collection needs its own baseline")
+        XCTAssertTrue(runner.events.contains { $0.message == "Bank balance: 1025; amount added: +25" })
+    }
+
+    @MainActor func testInterruptedCollectionDoesNotPublishPartialBalance() async throws {
+        let io = FakeIO(); io.frames = [[.bankTitle, .bankBalanceText]]
+        io.texts = [.bankBalanceText: "100"]
+        var config = AutomationConfiguration(); config.dryRun = false
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput
+        var macro = recording([.key(12)]); macro.steps[0].delayBeforeSeconds = 0.05
+        settings.bankingRecording = macro; settings.pollSeconds = 0.01
+        io.onAction = { _ in io.unsafe = true }
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await finish(runner)
+        XCTAssertEqual(runner.stage, .waitingForManualIntervention)
+        XCTAssertNil(runner.bankBalanceReading)
+        XCTAssertTrue(runner.bankBalanceStatus.contains("interrupted"))
+    }
+
 }

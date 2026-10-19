@@ -44,3 +44,45 @@ public enum BankingVerifier {
         return mode == .inventoryCountDecrease ? last < first : last > first
     }
 }
+
+/// An observed balance change, not independent proof that a deposit succeeded.
+public struct BankBalanceReading: Equatable, Sendable {
+    public let balance: Int64
+    public let added: Int64?
+    public let timestamp: Date
+}
+
+/// Requires two consecutive fresh, confident reads for each end of a collection.
+/// Values are scoped to one collection; a previous collection is never a baseline.
+public struct BankBalanceTracker: Sendable {
+    private var candidate: Int64?
+    private var candidateTime: Date?
+    private var baseline: Int64?
+    private var latest: (value: Int64, time: Date)?
+    public init() {}
+
+    public mutating func observe(_ frame: Observation, format: CountFormat) {
+        guard frame.has(.bankTitle) else {
+            candidate = nil; candidateTime = nil
+            return
+        }
+        guard !frame.has(.processingIndicator),
+              abs(frame.timestamp.timeIntervalSinceNow) < 2,
+              let value = BankingVerifier.count(in: frame, mode: .bankBalanceIncrease, format: format) else {
+            candidate = nil; candidateTime = nil; latest = nil
+            return
+        }
+        if candidate == value, let previousTime = candidateTime, frame.timestamp > previousTime {
+            if baseline == nil { baseline = value }
+            latest = (value, frame.timestamp)
+        } else {
+            latest = nil
+        }
+        candidate = value; candidateTime = frame.timestamp
+    }
+
+    public var reading: BankBalanceReading? {
+        guard let baseline, let latest, latest.value >= baseline else { return nil }
+        return BankBalanceReading(balance: latest.value, added: latest.value > baseline ? latest.value - baseline : nil, timestamp: latest.time)
+    }
+}

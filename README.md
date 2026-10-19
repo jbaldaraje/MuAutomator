@@ -47,6 +47,14 @@ For recovery later, record **Return to spot** starting from spawn. In Calibratio
 
 Pause blocks subsequent recorded input and freezes pending playback waits; Stop cancels pending input and releases an injected held key/button. Configured interruption labels are checked between inputs and during playback waits. Timing is subject to capture and OS dispatch latency; recording is positional playback, not automatic button recognition or pathfinding. The optional banking-trigger monitor can start another recorded cycle in full mode, so disable it while testing a single recording.
 
+## Dashboard bank balance
+
+Dashboard shows the latest confirmed numeric bank balance, observed amount added in that collection, and reading time. Each successfully completed banking workflow or recorded macro cycle starts a fresh baseline; it never calculates a deposit from a previous session's balance. Successful readings are also written to Activity for export. Values stay in memory for the current app session.
+
+In Calibration, label `bankTitle` on the open bank and `bankBalanceText` around exactly one number (exclude text labels and currency symbols). Choose **Workflows → Numeric format** for digits, comma grouping or space grouping. Use Detect only to check OCR against the real game. Tracking works with either image workflows or recorded inputs and does not change their existing verification rules.
+
+For recorded inputs, leave the bank visible briefly before the deposit and after processing finishes; allow at least two OCR observations at each end. Two fresh, consecutive, confident reads must agree. A positive difference is displayed as the observed amount added, not independent transfer proof. An unchanged number shows **Not confirmed** for amount added. Missing, malformed, low-confidence or unsettled readings and interrupted cycles retain the previous reading with its original timestamp and an explanation. No extra clicks, automatic retries or bank reopening are introduced. Exact OCR regions still need calibration on your Mac; Linux tests exercise the tracking logic, not Apple Vision accuracy against your game screen.
+
 ## Calibration
 
 Start with the [jewel-banking calibration guide](docs/CALIBRATION-GUIDE.md), then add Helper, skills and recovery for full automation. Calibration now groups targets in workflow order, explains what to mark for every label, and shows the targets required by the currently selected mode and options. Changing a label loads that target's own OCR/threshold settings. Editing either field immediately updates that saved target in memory; Save as startup default or Save named profile persists it without redrawing. Use image only clears an optional phrase for the selected target. The selected region is highlighted and previewed beside its saved template, and detection rows show each target's expected phrase, actual OCR, raw score and threshold.

@@ -170,6 +170,30 @@ struct DashboardView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
+                GroupBox("Bank balance") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if let reading = model.runner.bankBalanceReading {
+                            HStack(spacing: 32) {
+                                VStack(alignment: .leading) {
+                                    Text("Last confirmed balance").font(.caption).foregroundStyle(.secondary)
+                                    Text(reading.balance.formatted()).font(.largeTitle.monospacedDigit())
+                                }
+                                VStack(alignment: .leading) {
+                                    Text("Added in that collection").font(.caption).foregroundStyle(.secondary)
+                                    Text(reading.added.map { "+" + $0.formatted() } ?? "Not confirmed")
+                                        .font(.title2.monospacedDigit())
+                                }
+                            }
+                            Text("Read at \(reading.timestamp.formatted(date: .abbreviated, time: .standard))")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            Text("No confirmed balance yet").font(.headline)
+                        }
+                        Text(model.runner.bankBalanceStatus).font(.caption).textSelection(.enabled)
+                        Text("In Calibration, mark only the number as bankBalanceText and label bankTitle. Choose Numeric format in Workflows. Recorded workflows need a pause with the bank visible before and after the deposit. Readings are retained for this app session.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                }
                 GroupBox("Automation mode") {
                     VStack(alignment: .leading, spacing: 12) {
                         Picker("Mode", selection: $model.configuration.mode) {

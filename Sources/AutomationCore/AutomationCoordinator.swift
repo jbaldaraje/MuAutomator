@@ -9,6 +9,9 @@ public final class AutomationCoordinator {
     public private(set) var lastError: String?
     public private(set) var lastVerifiedAction: String?
     public private(set) var macroRunsCompleted = 0
+    public private(set) var bankBalanceReading: BankBalanceReading?
+    public private(set) var bankBalanceStatus = "Calibrate bankTitle and bankBalanceText to track collections."
+    private var balanceTracker: BankBalanceTracker?
     public var onChange: (() -> Void)?
     private var task: Task<Void, Never>?
     private var paused = false
@@ -200,6 +203,7 @@ public final class AutomationCoordinator {
             // A captured frame must not survive an intervening background/manual pause.
             guard revision == suspensionRevision else { continue }
             guard abs(value.timestamp.timeIntervalSinceNow) < 2 else { throw WorkflowFailure.unsafe("Stale screenshot") }
+            balanceTracker?.observe(value, format: settings.countFormat)
             lastObservation = value; onChange?()
             if [.disconnected, .loginScreen, .characterSelection].contains(value.state) {
                 throw WorkflowFailure.unsafe("\(value.state.rawValue): manual intervention required")
@@ -363,13 +367,19 @@ public final class AutomationCoordinator {
                 guard repetition.allowsNextRun(completedRuns: macroRunsCompleted, elapsedSeconds: activeTime() - activeStart) else { break }
                 let progress = repetition.mode == .count ? "\(macroRunsCompleted + 1)/\(repetition.count)" : "\(macroRunsCompleted + 1)"
                 transition(.preparingInventory, "Macro run \(progress): \(repetition.summary)")
-                try await playback(recording, allowRespawn: false)
+                beginBalanceCollection()
+                do { try await playback(recording, allowRespawn: false) }
+                catch { finishBalanceCollection(completed: false); throw error }
+                finishBalanceCollection(completed: true)
                 macroRunsCompleted += 1
                 transition(stage, "Completed macro run \(macroRunsCompleted); transfer result not visually verified")
             }
             transition(stage, "Recorded macro finished after \(macroRunsCompleted) runs; transfer result not verified")
             return
         }
+        beginBalanceCollection()
+        var collectionCompleted = false
+        defer { finishBalanceCollection(completed: collectionCompleted) }
         transition(.preparingInventory, "Checking inventory")
         var frame = try await observe()
         if !frame.has(.inventoryPanel) {
@@ -403,6 +413,29 @@ public final class AutomationCoordinator {
             !$0.has(.inventoryPanel) && ($0.has(.normalGameplay)
                 || (!self.config.strictGameplayRecognition && $0.permitsInput(strictGameplayRecognition: false)))
         }
+        collectionCompleted = true
+    }
+
+    private func beginBalanceCollection() {
+        balanceTracker = BankBalanceTracker()
+        bankBalanceStatus = "Reading bank balance during collection…"
+        onChange?()
+    }
+
+    private func finishBalanceCollection(completed: Bool) {
+        defer { balanceTracker = nil; onChange?() }
+        guard completed, let reading = balanceTracker?.reading else {
+            bankBalanceStatus = completed
+                ? "Couldn’t confirm this collection’s balance. Keep the bank open before and after depositing for two OCR reads. Check bankTitle, bankBalanceText and Numeric format."
+                : "Collection interrupted; previous balance retained."
+            return
+        }
+        bankBalanceReading = reading
+        bankBalanceStatus = reading.added == nil
+            ? "Balance read, but the amount added could not be confirmed."
+            : "Balance change observed in this collection; OCR does not independently prove a deposit."
+        let amount = reading.added.map { "+\($0)" } ?? "not confirmed"
+        transition(stage, "Bank balance: \(reading.balance); amount added: \(amount)")
     }
 
     private func helper() async throws {
