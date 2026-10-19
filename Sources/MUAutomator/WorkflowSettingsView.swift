@@ -55,6 +55,7 @@ struct WorkflowSettingsView: View {
                         numeric("Capture polling interval (seconds)", value: $model.settings.pollSeconds)
                     }.padding(8)
                 }
+                AutoRefocusEditor(settings: $model.settings.autoRefocus)
                 SkillEditor(configuration: $model.configuration, settings: $model.settings)
                 RouteEditor(route: $model.settings.route)
                 Button("Test route replay in 5 seconds (movement only)") { model.arm(routeTest: true) }
@@ -66,6 +67,33 @@ struct WorkflowSettingsView: View {
 
     private func numeric(_ title: String, value: Binding<Double>) -> some View {
         HStack { Text(title); Spacer(); TextField(title, value: value, format: .number).frame(width: 100) }
+    }
+}
+
+struct AutoRefocusEditor: View {
+    @Binding var settings: AutoRefocusSettings
+    var body: some View {
+        GroupBox("Window focus") {
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle("Auto refocus and resume", isOn: $settings.enabled)
+                if settings.enabled {
+                    HStack {
+                        Button("30 minutes") { settings.delaySeconds = 1800 }
+                        Button("1 hour") { settings.delaySeconds = 3600 }
+                        Text("After (minutes)")
+                        TextField("Minutes before refocusing", value: Binding(
+                            get: { settings.delaySeconds / 60 },
+                            set: { settings.delaySeconds = $0 * 60 }), format: .number)
+                            .frame(width: 100)
+                    }
+                    Text("After this much time paused, unfocused, or without an automation input, bring your selected game window forward and continue. Manual Pause can resume automatically. Stopped or completed sessions stay stopped.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text("Switch windows freely. Playback waits for your selected game to regain focus; Manual Pause requires Resume.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }.padding(6)
+        }
     }
 }
 

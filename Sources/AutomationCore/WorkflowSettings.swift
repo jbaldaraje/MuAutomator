@@ -2,6 +2,17 @@ import Foundation
 
 public enum CoordinatorError: Error { case invalidTransition }
 
+public struct AutoRefocusSettings: Codable, Equatable, Sendable {
+    public var enabled = false
+    public var delaySeconds: Double = 1800
+    public init() {}
+    public func validate() throws {
+        guard delaySeconds.isFinite, delaySeconds > 0, delaySeconds <= 31_536_000 else {
+            throw WorkflowFailure.prerequisite("Auto-refocus time must be greater than zero and no more than one year")
+        }
+    }
+}
+
 public enum GameAction: Codable, Equatable, Sendable {
     case click(TargetRole)
     case key(UInt16)
@@ -42,6 +53,7 @@ public struct WorkflowSettings: Codable, Sendable {
     public var bankingInputMode: BankingInputMode = .visualWorkflow
     public var bankingRecording: InputRecording?
     public var macroRepeat = MacroRepeatSettings()
+    public var autoRefocus = AutoRefocusSettings()
     public var bankingVerification: BankingVerificationMode = .newSuccessIndicator
     public var countFormat: CountFormat = .digitsOnly
     public var inventoryMonitoringEnabled = true
@@ -59,7 +71,7 @@ public struct WorkflowSettings: Codable, Sendable {
     public init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, bankingEnabled, bankingInputMode, bankingRecording, macroRepeat, bankingVerification, countFormat, inventoryMonitoringEnabled, bankingCooldownSeconds
+        case schemaVersion, bankingEnabled, bankingInputMode, bankingRecording, macroRepeat, autoRefocus, bankingVerification, countFormat, inventoryMonitoringEnabled, bankingCooldownSeconds
         case actionTimeoutSeconds, workflowTimeoutSeconds, recoveryTimeoutSeconds, routeTimeoutSeconds
         case maximumRecoveries, pollSeconds, detectionRetries, skills, repeatSkills, route
     }
@@ -74,6 +86,7 @@ public struct WorkflowSettings: Codable, Sendable {
         bankingInputMode = try read(.bankingInputMode, bankingInputMode)
         bankingRecording = try values.decodeIfPresent(InputRecording.self, forKey: .bankingRecording)
         macroRepeat = try read(.macroRepeat, macroRepeat)
+        autoRefocus = try read(.autoRefocus, autoRefocus)
         bankingVerification = try read(.bankingVerification, bankingVerification)
         countFormat = try read(.countFormat, countFormat)
         inventoryMonitoringEnabled = try read(.inventoryMonitoringEnabled, inventoryMonitoringEnabled)
@@ -94,6 +107,7 @@ public struct WorkflowSettings: Codable, Sendable {
         try bankingRecording?.validate()
         try route.recording?.validate()
         try macroRepeat.validate()
+        try autoRefocus.validate()
         guard schemaVersion == 1,
               actionTimeoutSeconds.isFinite, (0.1...120).contains(actionTimeoutSeconds),
               workflowTimeoutSeconds.isFinite, (1...86400).contains(workflowTimeoutSeconds),
@@ -125,7 +139,7 @@ public enum WorkflowStage: String, Sendable {
     case idle, initializing, preparingInventory, openingJewelBank, transferringJewels, verifyingBanking
     case closingInventory, openingHelper, startingHelper, verifyingHelper, farming
     case possibleDeath, waitingForRespawn, returningToSpot, verifyingLocation
-    case paused, waitingForManualIntervention, completed, cancelled
+    case paused, waitingForFocus, waitingForManualIntervention, completed, cancelled
 }
 
 public struct WorkflowEvent: Identifiable, Sendable {
@@ -140,9 +154,14 @@ public struct WorkflowEvent: Identifiable, Sendable {
 
 public enum WorkflowFailure: Error, Equatable, LocalizedError {
     case prerequisite(String), uncertain(String), timeout(String), unsafe(String)
+    /// No press was delivered; retry only after the selected window is ready.
+    case focusUnavailable(String)
+    /// A press was delivered and released; never replay it on focus return.
+    case focusLostAfterInput(String)
     public var errorDescription: String? {
         switch self {
-        case .prerequisite(let value), .uncertain(let value), .timeout(let value), .unsafe(let value): return value
+        case .prerequisite(let value), .uncertain(let value), .timeout(let value), .unsafe(let value),
+             .focusUnavailable(let value), .focusLostAfterInput(let value): return value
         }
     }
 }
@@ -155,6 +174,8 @@ public protocol WorkflowIO: AnyObject {
     func hasCalibratedTarget(_ role: TargetRole) -> Bool
     func describeAction(_ action: GameAction) -> String
     func performRecorded(_ step: RecordedInputStep) async throws
+    func prepareToResumeAfterFocus() async throws
+    func refocusSelectedWindow() async throws
 }
 
 public extension WorkflowIO {
@@ -163,4 +184,6 @@ public extension WorkflowIO {
     func performRecorded(_ step: RecordedInputStep) async throws {
         throw WorkflowFailure.prerequisite("This input adapter does not support recorded holds")
     }
+    func prepareToResumeAfterFocus() async throws { try checkSafety() }
+    func refocusSelectedWindow() async throws { throw WorkflowFailure.prerequisite("This input adapter cannot refocus a game window") }
 }

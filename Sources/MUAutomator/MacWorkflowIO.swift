@@ -17,6 +17,7 @@ final class MacWorkflowIO: WorkflowIO {
     var onClick: ((String, CGImage?) -> Void)?
     private var clickDescription: String?
     private let recordedWindow: InputRecording?
+    private var coveredClickPoint: CGPoint?
 
     func describeAction(_ action: GameAction) -> String {
         switch action {
@@ -60,7 +61,8 @@ final class MacWorkflowIO: WorkflowIO {
         try Task.checkCancellation()
         currentWindow = fresh
         binding = verified
-        try checkSafety()
+        // A bound session can start waiting if focus changes during startup.
+        do { try checkSafety() } catch WorkflowFailure.focusUnavailable { }
     }
 
     var captureBounds: CGRect { currentWindow.frame }
@@ -92,31 +94,52 @@ final class MacWorkflowIO: WorkflowIO {
         guard CGPreflightScreenCaptureAccess(), AXIsProcessTrusted() else {
             throw WorkflowFailure.unsafe("Screen Recording or Accessibility permission is missing")
         }
-        guard let app = window.owningApplication,
-              NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processID else {
-            throw WorkflowFailure.unsafe("Selected game's application lost focus")
-        }
         guard let binding else { throw WorkflowFailure.unsafe("Selected window has not been verified; start again") }
+        guard let app = window.owningApplication, NSRunningApplication(processIdentifier: app.processID) != nil else {
+            throw WorkflowFailure.unsafe("Selected game's application closed")
+        }
         // Retained AX identity distinguishes same-title windows of one browser.
         // Titles are presentation text, not a window or tab identifier.
         let appElement = AXUIElementCreateApplication(app.processID)
         AXUIElementSetMessagingTimeout(appElement, 0.15)
+        func requireSelectedWindowStillExists() throws {
+            var windowsValue: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsValue) == .success,
+                  let windows = windowsValue as? [AXUIElement] else {
+                throw WorkflowFailure.focusUnavailable("Waiting for the selected browser window's Accessibility metadata")
+            }
+            guard windows.contains(where: { CFEqual($0, binding.windowElement) }) else {
+                throw WorkflowFailure.unsafe("Selected game window closed or is no longer accessible")
+            }
+        }
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processID else {
+            try requireSelectedWindowStillExists()
+            throw WorkflowFailure.focusUnavailable("Waiting for selected game window \(window.windowID); another application has focus")
+        }
         var element: CFTypeRef?
         if AXUIElementCopyAttributeValue(appElement, kAXFocusedUIElementAttribute as CFString, &element) == .success,
            let element, CFGetTypeID(element) == AXUIElementGetTypeID() {
             var role: CFTypeRef?
             _ = AXUIElementCopyAttributeValue(element as! AXUIElement, kAXRoleAttribute as CFString, &role)
             if let role = role as? String, [kAXTextFieldRole, kAXTextAreaRole].contains(role) {
-                throw WorkflowFailure.unsafe("A text field has keyboard focus")
+                try requireSelectedWindowStillExists()
+                throw WorkflowFailure.focusUnavailable("A text field has focus; click the selected game canvas to continue")
             }
         }
         var focusedValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &focusedValue) == .success,
               let focusedValue, CFGetTypeID(focusedValue) == AXUIElementGetTypeID() else {
-            throw WorkflowFailure.unsafe("Cannot verify focused browser window")
+            try requireSelectedWindowStillExists()
+            throw WorkflowFailure.focusUnavailable("Waiting for the selected browser window to regain focus")
         }
         let focused = focusedValue as! AXUIElement
+        if !CFEqual(binding.windowElement, focused) { try requireSelectedWindowStillExists() }
         try binding.requireFocusedWindow(focused)
+        var minimized: CFTypeRef?
+        if AXUIElementCopyAttributeValue(focused, kAXMinimizedAttribute as CFString, &minimized) == .success,
+           (minimized as? Bool) == true {
+            throw WorkflowFailure.focusUnavailable("Restore the selected game window to continue")
+        }
         AXUIElementSetMessagingTimeout(focused, 0.15)
         var positionValue: CFTypeRef?, sizeValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(focused, kAXPositionAttribute as CFString, &positionValue) == .success,
@@ -135,9 +158,60 @@ final class MacWorkflowIO: WorkflowIO {
         if let recordedWindow, !recordedWindow.matchesWindow(width: size.width, height: size.height) {
             throw WorkflowFailure.unsafe("Browser size differs from the input recording")
         }
+        guard CGEventSource.flagsState(.combinedSessionState)
+            .intersection([.maskCommand, .maskControl, .maskAlternate, .maskShift]).isEmpty else {
+            throw WorkflowFailure.focusUnavailable("Release keyboard shortcuts to continue in the selected game")
+        }
+        if let point = coveredClickPoint {
+            guard Self.topWindow(at: point) == window.windowID else {
+                throw WorkflowFailure.focusUnavailable("The next click is covered; bring the selected game window to the front")
+            }
+            coveredClickPoint = nil
+        }
+    }
+
+    func prepareToResumeAfterFocus() async throws {
+        try checkSafety()
+        try await verifyGamePage()
+        try checkSafety()
+        lastObservation = nil
+    }
+
+    func refocusSelectedWindow() async throws {
+        try Task.checkCancellation()
+        guard CGPreflightScreenCaptureAccess(), AXIsProcessTrusted(), let binding,
+              let app = NSRunningApplication(processIdentifier: binding.processID) else {
+            throw WorkflowFailure.unsafe("Cannot refocus: selected browser closed or permissions are missing")
+        }
+        let element = binding.windowElement
+        // Restore/raise the retained selected AX window. Never choose another
+        // Chrome window by title, and never inject a focus click.
+        _ = AXUIElementSetAttributeValue(element, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+        _ = AXUIElementSetAttributeValue(element, kAXMainAttribute as CFString, kCFBooleanTrue)
+        _ = app.activate(options: [.activateIgnoringOtherApps])
+        let appElement = AXUIElementCreateApplication(binding.processID)
+        _ = AXUIElementSetAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, element)
+        _ = AXUIElementPerformAction(element, kAXRaiseAction as CFString)
+        try await Task.sleep(nanoseconds: 250_000_000)
+        try Task.checkCancellation()
+        try await verifyGamePage()
+        if let document = binding.documentElement {
+            _ = AXUIElementSetAttributeValue(document, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        }
+        try await prepareToResumeAfterFocus()
     }
 
     func observe() async throws -> Observation {
+        do { return try await captureObservation() }
+        catch {
+            // Window minimization/focus changes can also interrupt capture.
+            // Prefer the current focus/permission state over a transient capture error.
+            try checkSafety()
+            throw error
+        }
+    }
+
+    private func captureObservation() async throws -> Observation {
         try checkSafety()
         try await verifyGamePage()
         try checkSafety()
@@ -183,7 +257,7 @@ final class MacWorkflowIO: WorkflowIO {
         try checkSafety()
         guard CGEventSource.flagsState(.combinedSessionState)
             .intersection([.maskCommand, .maskControl, .maskAlternate, .maskShift]).isEmpty else {
-            throw WorkflowFailure.unsafe("Release modifier keys before automated input")
+            throw WorkflowFailure.focusUnavailable("Release modifier keys before automated input resumes")
         }
         guard let observation = lastObservation, abs(observation.timestamp.timeIntervalSinceNow) < 2 else {
             throw WorkflowFailure.unsafe("Input requires fresh visual evidence")
@@ -248,7 +322,8 @@ final class MacWorkflowIO: WorkflowIO {
                                      whileHeld: { try await self.hold(holdSeconds) }) {
             try self.checkSafety()
             guard Self.topWindow(at: point) == self.window.windowID else {
-                throw WorkflowFailure.unsafe("The click point is covered by another window; bring the selected game to the front")
+                self.coveredClickPoint = point
+                throw WorkflowFailure.focusUnavailable("The click point is covered by another window; bring the selected game to the front")
             }
         }
     }
@@ -294,10 +369,14 @@ enum MacMouseInput {
         try Task.checkCancellation(); try check()
         post(down)
         do {
-            defer { post(up) }
-            try await whileHeld()
+            do {
+                defer { post(up) }
+                try await whileHeld()
+            }
+            try Task.checkCancellation(); try check()
+        } catch WorkflowFailure.focusUnavailable(let reason) {
+            throw WorkflowFailure.focusLostAfterInput(reason)
         }
-        try Task.checkCancellation(); try check()
     }
 
     static func click(at point: CGPoint, source: CGEventSource?,
@@ -322,10 +401,14 @@ enum MacMouseInput {
         post(down)
         // Always release a delivered press, including cancellation/focus loss.
         do {
-            defer { post(up) }
-            if let whileHeld { try await whileHeld() }
-            else { try await Task.sleep(nanoseconds: holdNanoseconds) }
+            do {
+                defer { post(up) }
+                if let whileHeld { try await whileHeld() }
+                else { try await Task.sleep(nanoseconds: holdNanoseconds) }
+            }
+            try Task.checkCancellation(); try check()
+        } catch WorkflowFailure.focusUnavailable(let reason) {
+            throw WorkflowFailure.focusLostAfterInput(reason)
         }
-        try Task.checkCancellation(); try check()
     }
 }

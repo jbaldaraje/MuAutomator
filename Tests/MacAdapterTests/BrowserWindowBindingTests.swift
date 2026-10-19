@@ -1,8 +1,20 @@
 import XCTest
 import ApplicationServices
+import AutomationCore
 @testable import MUAutomator
 
 final class BrowserWindowBindingTests: XCTestCase {
+    func testAnotherWindowIsClassifiedAsTemporaryFocusLoss() {
+        let binding = BrowserWindowBinding(windowID: 2, processID: 7,
+                                          windowElement: AXUIElementCreateApplication(900001),
+                                          documentElement: nil, documentURL: "https://open.mu/game")
+        XCTAssertThrowsError(try binding.requireFocusedWindow(AXUIElementCreateApplication(900002))) { error in
+            guard case WorkflowFailure.focusUnavailable = error else {
+                return XCTFail("A different Chrome window must wait for focus, not end the session")
+            }
+        }
+    }
+
     func testThreeSameProcessGameWindowsBindSelectedIdentityWithoutReadingTitles() throws {
         // Mock AX references; no real browser, focus change or input is used.
         let windows = (0..<3).map { AXUIElementCreateApplication(pid_t(900001 + $0)) }

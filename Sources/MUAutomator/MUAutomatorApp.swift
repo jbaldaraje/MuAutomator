@@ -43,7 +43,7 @@ private struct AppShellView: View {
             HStack {
                 Text("MU Automator").font(.title.bold())
                 Spacer()
-                Text(model.runner.stage.rawValue)
+                Text(model.runner.isWaitingForFocus ? "Waiting for game focus" : model.runner.stage.rawValue)
                 Button("Emergency Stop", role: .destructive) { model.stop() }
             }.padding()
             HStack(spacing: 8) {
@@ -166,6 +166,7 @@ struct DashboardView: View {
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                         }
+                        AutoRefocusEditor(settings: $model.settings.autoRefocus)
                         Toggle("Dry run (use Detect only in Calibration)", isOn: $model.configuration.dryRun)
                         Toggle("Strict gameplay recognition (require normalGameplay)", isOn: $model.configuration.strictGameplayRecognition)
                         Text(model.configuration.strictGameplayRecognition
@@ -183,6 +184,14 @@ struct DashboardView: View {
                         Text("Window: \(capture.selectedID.map { String($0) } ?? "not selected")")
                         Text("Game state: \(model.runner.lastObservation?.state.rawValue ?? "unknown")")
                         Text("Last verified result: \(model.runner.lastVerifiedAction ?? "none")")
+                        if model.runner.isWaitingForFocus {
+                            Text("Playback and timers are paused. Return to the selected game window to continue automatically. No new clicks or key presses are sent while you use another window.")
+                                .font(.callout).foregroundStyle(.blue)
+                        }
+                        if model.settings.autoRefocus.enabled {
+                            Text("Auto refocus and resume: after \(model.settings.autoRefocus.delaySeconds / 60, specifier: "%.1f") minutes paused, unfocused, or without an automation input.")
+                                .font(.caption)
+                        }
                         if model.settings.bankingInputMode == .recordedInput {
                             Text("Completed macro runs: \(model.runner.macroRunsCompleted)")
                         }
@@ -207,7 +216,7 @@ struct DashboardView: View {
                             .disabled(model.locked || capture.busy)
                         Text("The click test sends one inventory-button click and captures the result. It does not open the bank or transfer jewels.")
                             .font(.caption).foregroundStyle(.secondary)
-                        Text("After Start/Resume, focus the game. Pause/resume: Control–Option–Command–P. Emergency Stop: Control–Option–Command–Escape. Delivered input cannot be retracted.")
+                        Text("Focus loss waits automatically; return to the selected game to continue. Manual Pause requires Resume unless Auto refocus and resume is enabled. Pause/resume: Control–Option–Command–P. Emergency Stop: Control–Option–Command–Escape.")
                             .font(.caption)
                         Text("Last event: \(model.runner.events.last?.message ?? "none")").textSelection(.enabled)
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
