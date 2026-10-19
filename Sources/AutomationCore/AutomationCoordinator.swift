@@ -8,6 +8,7 @@ public final class AutomationCoordinator {
     public private(set) var lastObservation: Observation?
     public private(set) var lastError: String?
     public private(set) var lastVerifiedAction: String?
+    public private(set) var macroRunsCompleted = 0
     public var onChange: (() -> Void)?
     private var task: Task<Void, Never>?
     private var paused = false
@@ -21,6 +22,7 @@ public final class AutomationCoordinator {
     private var resumeStage: WorkflowStage = .idle
     private var skillTimes: [UUID: Date] = [:]
     private var routeTest = false
+    private var macroUsesOwnLimit = false
 
     public init() {}
     public var active: Bool { task != nil }
@@ -46,7 +48,7 @@ public final class AutomationCoordinator {
         self.routeTest = routeTest
         started = Date(); deadline = started.addingTimeInterval(settings.workflowTimeoutSeconds)
         skillTimes = [:]; paused = false; pauseStarted = nil; pausedSeconds = 0
-        lastError = nil; lastVerifiedAction = nil
+        lastError = nil; lastVerifiedAction = nil; macroRunsCompleted = 0; macroUsesOwnLimit = false
         transition(.initializing, "Workflow started: \(configuration.mode.title)")
         task = Task { [weak self] in
             guard let self else { return }
@@ -96,7 +98,7 @@ public final class AutomationCoordinator {
             try await Task.sleep(nanoseconds: 100_000_000)
             try Task.checkCancellation()
         }
-        guard Date() < deadline else { throw WorkflowFailure.timeout("Maximum workflow duration reached") }
+        guard macroUsesOwnLimit || Date() < deadline else { throw WorkflowFailure.timeout("Maximum workflow duration reached") }
         guard let io else { throw CancellationError() }
         try io.checkSafety()
     }
@@ -224,9 +226,31 @@ public final class AutomationCoordinator {
             guard let recording = settings.bankingRecording else {
                 throw WorkflowFailure.prerequisite("Record the jewel workflow first")
             }
-            transition(.preparingInventory, "Replaying recorded jewel inputs once; no inventory/bank image labels required")
-            try await playback(recording, allowRespawn: false)
-            transition(stage, "Recorded jewel inputs finished; transfer result not verified. No automatic retry.")
+            let repetition = settings.macroRepeat
+            let activeStart = activeTime()
+            let wallStart = Date()
+            macroUsesOwnLimit = repetition.mode != .once
+            defer {
+                // Explicit macro count/hours owns this phase's limit. Other
+                // workflow modules keep their remaining session time afterward.
+                if macroUsesOwnLimit { deadline.addTimeInterval(Date().timeIntervalSince(wallStart)) }
+                macroUsesOwnLimit = false
+            }
+            macroRunsCompleted = 0
+            while repetition.allowsNextRun(completedRuns: macroRunsCompleted, elapsedSeconds: activeTime() - activeStart) {
+                if macroRunsCompleted > 0 {
+                    let stopAt = repetition.mode == .duration ? activeStart + repetition.durationSeconds : nil
+                    try await recordedDelay(repetition.delayBetweenRunsSeconds, allowRespawn: false, stopAtActiveTime: stopAt)
+                }
+                try await gate()
+                guard repetition.allowsNextRun(completedRuns: macroRunsCompleted, elapsedSeconds: activeTime() - activeStart) else { break }
+                let progress = repetition.mode == .count ? "\(macroRunsCompleted + 1)/\(repetition.count)" : "\(macroRunsCompleted + 1)"
+                transition(.preparingInventory, "Macro run \(progress): \(repetition.summary)")
+                try await playback(recording, allowRespawn: false)
+                macroRunsCompleted += 1
+                transition(stage, "Completed macro run \(macroRunsCompleted); transfer result not visually verified")
+            }
+            transition(stage, "Recorded macro finished after \(macroRunsCompleted) runs; transfer result not verified")
             return
         }
         transition(.preparingInventory, "Checking inventory")
@@ -367,30 +391,39 @@ public final class AutomationCoordinator {
                 throw WorkflowFailure.unsafe("Recorded playback stopped by \(frame.state.rawValue)")
             }
         }
-        func delay(_ seconds: Double) async throws {
-            func activeTime() -> Double {
-                Date().timeIntervalSinceReferenceDate - pausedSeconds
-                    - (pauseStarted.map { Date().timeIntervalSince($0) } ?? 0)
-            }
-            var remaining = seconds
-            while remaining > 0 {
-                try await gate()
-                let start = activeTime()
-                try await checkFrame()
-                let sleep = min(max(0, remaining - (activeTime() - start)), settings.pollSeconds, 0.25)
-                if sleep > 0 { try await Task.sleep(nanoseconds: UInt64(sleep * 1_000_000_000)) }
-                remaining -= activeTime() - start
-            }
-        }
         for (index, step) in recording.steps.enumerated() {
-            try await delay(step.delayBeforeSeconds)
+            try await recordedDelay(step.delayBeforeSeconds, allowRespawn: allowRespawn, routeDeadline: playbackDeadline)
             try await checkFrame()
             try await gate(); try checkDeadline()
             guard let io else { throw CancellationError() }
             try await io.performRecorded(step)
             transition(stage, "Replayed input \(index + 1)/\(recording.steps.count): \(io.describeAction(step.action))")
         }
-        try await delay(recording.tailDelaySeconds)
+        try await recordedDelay(recording.tailDelaySeconds, allowRespawn: allowRespawn, routeDeadline: playbackDeadline)
         try await checkFrame()
+    }
+
+    private func activeTime() -> Double {
+        Date().timeIntervalSinceReferenceDate - pausedSeconds
+            - (pauseStarted.map { Date().timeIntervalSince($0) } ?? 0)
+    }
+
+    private func recordedDelay(_ seconds: Double, allowRespawn: Bool, routeDeadline: Date? = nil,
+                               stopAtActiveTime: Double? = nil) async throws {
+        var remaining = seconds
+        while remaining > 0 {
+            try await gate()
+            let start = activeTime()
+            if let stopAtActiveTime, start >= stopAtActiveTime { return }
+            if let routeDeadline, Date() >= routeDeadline { throw WorkflowFailure.timeout("Maximum route duration reached") }
+            let frame = try await observe()
+            guard frame.permitsInput(strictGameplayRecognition: config.strictGameplayRecognition, allowRespawn: allowRespawn) else {
+                throw WorkflowFailure.unsafe("Recorded playback stopped by \(frame.state.rawValue)")
+            }
+            var sleep = min(max(0, remaining - (activeTime() - start)), settings.pollSeconds, 0.25)
+            if let stopAtActiveTime { sleep = min(sleep, max(0, stopAtActiveTime - activeTime())) }
+            if sleep > 0 { try await Task.sleep(nanoseconds: UInt64(sleep * 1_000_000_000)) }
+            remaining -= activeTime() - start
+        }
     }
 }

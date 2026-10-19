@@ -14,8 +14,9 @@ struct WorkflowSettingsView: View {
                             ForEach(BankingInputMode.allCases, id: \.self) { Text($0.title).tag($0) }
                         }
                         if model.settings.bankingInputMode == .recordedInput {
-                            Text("Use Record inputs → Jewel workflow to capture your clicks, key holds and pauses. Playback does not require inventory/bank labels. It replays once; finishing the inputs does not verify a deposit.")
+                            Text("Use Record inputs → Jewel workflow to capture your clicks, key holds and pauses. Playback does not require inventory/bank labels. Finishing the inputs does not verify a deposit.")
                                 .font(.caption)
+                            MacroRepeatEditor(repetition: $model.settings.macroRepeat)
                             RecordedInputEditor(recording: $model.settings.bankingRecording)
                         } else {
                             Picker("Transfer verification", selection: $model.settings.bankingVerification) {
@@ -48,6 +49,9 @@ struct WorkflowSettingsView: View {
                     VStack {
                         numeric("Action verification timeout (seconds)", value: $model.settings.actionTimeoutSeconds)
                         numeric("Maximum session duration (seconds)", value: $model.settings.workflowTimeoutSeconds)
+                        if model.settings.bankingInputMode == .recordedInput && model.settings.macroRepeat.mode != .once {
+                            Text("The macro uses its repeat count or hours. This session limit applies to the other workflow phases.").font(.caption)
+                        }
                         numeric("Capture polling interval (seconds)", value: $model.settings.pollSeconds)
                     }.padding(8)
                 }
@@ -62,6 +66,43 @@ struct WorkflowSettingsView: View {
 
     private func numeric(_ title: String, value: Binding<Double>) -> some View {
         HStack { Text(title); Spacer(); TextField(title, value: value, format: .number).frame(width: 100) }
+    }
+}
+
+struct MacroRepeatEditor: View {
+    @Binding var repetition: MacroRepeatSettings
+    var body: some View {
+        GroupBox("Macro repeats") {
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("Repeat", selection: $repetition.mode) {
+                    ForEach(MacroRepeatMode.allCases, id: \.self) { Text($0.title).tag($0) }
+                }.pickerStyle(.segmented)
+                if repetition.mode == .count {
+                    HStack {
+                        Text("Total runs")
+                        TextField("Total runs", value: $repetition.count, format: .number).frame(width: 110)
+                    }
+                }
+                if repetition.mode == .duration {
+                    HStack {
+                        Text("Hours")
+                        TextField("Hours", value: Binding(get: { repetition.durationSeconds / 3600 },
+                                                         set: { repetition.durationSeconds = $0 * 3600 }), format: .number)
+                            .frame(width: 110)
+                    }
+                }
+                if repetition.mode != .once {
+                    HStack {
+                        Text("Delay between runs (seconds)")
+                        TextField("Delay between runs", value: $repetition.delayBetweenRunsSeconds, format: .number)
+                            .frame(width: 110)
+                    }
+                    Text("Repeats the entire recording. Count includes the first run. Hours exclude paused time; the current cycle finishes when time expires. Record a sequence that ends ready to start again.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Text(repetition.summary).font(.caption)
+            }.padding(6)
+        }
     }
 }
 

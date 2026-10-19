@@ -31,6 +31,178 @@ private final class FakeIO: WorkflowIO {
 }
 
 final class WorkflowTests: XCTestCase {
+    @MainActor func testMacroHoursExcludesPausedTime() async throws {
+        let io = FakeIO(); io.frames = [[]]
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput; settings.pollSeconds = 0.01
+        settings.bankingRecording = recording([.key(12)])
+        settings.bankingRecording?.tailDelaySeconds = 0.05
+        settings.macroRepeat.mode = .duration; settings.macroRepeat.durationSeconds = 0.2
+        let runner = AutomationCoordinator(); var didPause = false
+        runner.onChange = {
+            if runner.macroRunsCompleted == 1 && !didPause { didPause = true; runner.pause() }
+        }
+        var config = AutomationConfiguration(); config.dryRun = false
+        try runner.start(configuration: config, settings: settings, io: io)
+        let until = Date().addingTimeInterval(1)
+        while !didPause && Date() < until { try await Task.sleep(nanoseconds: 5_000_000) }
+        XCTAssertTrue(didPause)
+        try await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertEqual(io.actions, [.key(12)])
+        try runner.resume(); try await finish(runner)
+        XCTAssertGreaterThan(runner.macroRunsCompleted, 1, "Paused wall time must not consume the remaining hours budget")
+        XCTAssertEqual(runner.stage, .completed)
+        runner.onChange = nil
+    }
+
+    @MainActor func testMacroRepeatsDoNotRepeatReturnRouteReplay() async throws {
+        let io = FakeIO(); io.frames = [[.respawnIndicator]]
+        io.onAction = { _ in io.frames = [[.destinationLandmark]] }
+        var settings = WorkflowSettings(); settings.bankingEnabled = false
+        settings.route.recording = recording([.key(12)])
+        settings.macroRepeat.mode = .count; settings.macroRepeat.count = 3
+        var config = AutomationConfiguration(); config.dryRun = false; config.mode = .fullAutomation
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io, routeTest: true)
+        try await finish(runner)
+        XCTAssertEqual(io.actions, [.key(12)])
+        XCTAssertEqual(runner.stage, .completed)
+        XCTAssertEqual(runner.lastVerifiedAction, "farming destination")
+        XCTAssertEqual(runner.macroRunsCompleted, 0)
+    }
+
+    @MainActor func testMacroCountReplaysWholeSequenceExactlyNTimes() async throws {
+        let io = FakeIO(); io.frames = [[]]
+        let actions: [GameAction] = [.key(12), .point(x: 0.3, y: 0.4)]
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput
+        settings.bankingRecording = recording(actions)
+        settings.macroRepeat.mode = .count; settings.macroRepeat.count = 3
+        settings.macroRepeat.delayBetweenRunsSeconds = 0.02
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await finish(runner)
+        XCTAssertEqual(io.actions, actions + actions + actions)
+        XCTAssertEqual(runner.macroRunsCompleted, 3)
+        XCTAssertEqual(runner.stage, .completed)
+        XCTAssertNil(runner.lastVerifiedAction)
+    }
+
+    @MainActor func testMacroHoursFinishesCurrentCycleThenDoesNotStartAnother() async throws {
+        let io = FakeIO(); io.frames = [[]]
+        let actions: [GameAction] = [.key(12), .key(13)]
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput; settings.pollSeconds = 0.01
+        settings.bankingRecording = recording(actions)
+        settings.bankingRecording?.steps[1].delayBeforeSeconds = 0.12
+        settings.macroRepeat.mode = .duration; settings.macroRepeat.durationSeconds = 0.08
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await finish(runner)
+        XCTAssertEqual(io.actions, actions, "Finish the second input of the current cycle after time expires")
+        XCTAssertEqual(runner.macroRunsCompleted, 1)
+        XCTAssertEqual(runner.stage, .completed)
+    }
+
+    @MainActor func testMacroHoursDoesNotStartCycleAfterBetweenRunDelay() async throws {
+        let io = FakeIO(); io.frames = [[]]
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput; settings.pollSeconds = 0.01
+        settings.bankingRecording = recording([.key(12)])
+        settings.macroRepeat.mode = .duration; settings.macroRepeat.durationSeconds = 0.08
+        settings.macroRepeat.delayBetweenRunsSeconds = 0.2
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await finish(runner)
+        XCTAssertEqual(io.actions, [.key(12)])
+        XCTAssertEqual(runner.macroRunsCompleted, 1)
+        XCTAssertEqual(runner.stage, .completed)
+    }
+
+    @MainActor func testMacroCountUsesOwnLimitInsteadOfDefaultSessionCutoff() async throws {
+        let io = FakeIO(); io.frames = [[]]
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput; settings.pollSeconds = 0.01
+        settings.workflowTimeoutSeconds = 1
+        settings.bankingRecording = recording([.key(12)])
+        settings.bankingRecording?.tailDelaySeconds = 0.55
+        settings.macroRepeat.mode = .count; settings.macroRepeat.count = 2
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await finish(runner)
+        XCTAssertEqual(runner.stage, .completed)
+        XCTAssertEqual(runner.macroRunsCompleted, 2)
+        XCTAssertEqual(io.actions, [.key(12), .key(12)])
+    }
+
+    @MainActor func testMacroHoursUsesOwnLimitInsteadOfDefaultSessionCutoff() async throws {
+        let io = FakeIO(); io.frames = [[]]
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput; settings.pollSeconds = 0.01
+        settings.workflowTimeoutSeconds = 1
+        settings.bankingRecording = recording([.key(12)])
+        settings.bankingRecording?.tailDelaySeconds = 1.1
+        settings.macroRepeat.mode = .duration; settings.macroRepeat.durationSeconds = 1.05
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await finish(runner)
+        XCTAssertEqual(runner.stage, .completed)
+        XCTAssertEqual(runner.macroRunsCompleted, 1)
+    }
+
+    @MainActor func testMacroRepeatStopsOnInterruptionWithoutRetryingFailedCycle() async throws {
+        let io = FakeIO(); io.frames = [[]]
+        io.onAction = { _ in io.frames = [[.deathIndicator]] }
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput
+        settings.bankingRecording = recording([.key(12)])
+        settings.macroRepeat.mode = .count; settings.macroRepeat.count = 3
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await finish(runner)
+        XCTAssertEqual(io.actions, [.key(12)])
+        XCTAssertEqual(runner.macroRunsCompleted, 0)
+        XCTAssertEqual(runner.stage, .waitingForManualIntervention)
+    }
+
+    @MainActor func testMacroRepeatCanPauseBetweenCyclesThenResume() async throws {
+        let io = FakeIO(); io.frames = [[]]
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput
+        settings.bankingRecording = recording([.key(12)])
+        settings.macroRepeat.mode = .count; settings.macroRepeat.count = 2
+        let runner = AutomationCoordinator(); var didPause = false
+        runner.onChange = {
+            if runner.macroRunsCompleted == 1 && !didPause { didPause = true; runner.pause() }
+        }
+        var config = AutomationConfiguration(); config.dryRun = false
+        try runner.start(configuration: config, settings: settings, io: io)
+        let until = Date().addingTimeInterval(1)
+        while !didPause && Date() < until { try await Task.sleep(nanoseconds: 5_000_000) }
+        XCTAssertTrue(didPause)
+        try await Task.sleep(nanoseconds: 40_000_000)
+        XCTAssertEqual(io.actions, [.key(12)])
+        try runner.resume(); try await finish(runner)
+        XCTAssertEqual(io.actions, [.key(12), .key(12)])
+        XCTAssertEqual(runner.macroRunsCompleted, 2)
+        runner.onChange = nil
+    }
+
+    @MainActor func testMacroRepeatCanBeCancelledBetweenCycles() async throws {
+        let io = FakeIO(); io.frames = [[]]
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput
+        settings.bankingRecording = recording([.key(12)])
+        settings.macroRepeat.mode = .count; settings.macroRepeat.count = 100
+        let runner = AutomationCoordinator(); var didStop = false
+        runner.onChange = {
+            if runner.macroRunsCompleted == 1 && !didStop { didStop = true; runner.stop() }
+        }
+        var config = AutomationConfiguration(); config.dryRun = false
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await finish(runner)
+        XCTAssertEqual(io.actions, [.key(12)])
+        XCTAssertEqual(runner.stage, .cancelled)
+        runner.onChange = nil
+    }
+
     private func recording(_ actions: [GameAction]) -> InputRecording {
         var value = InputRecording(windowWidth: 1000, windowHeight: 800)
         value.steps = actions.map { .init(action: $0, holdSeconds: 0.1) }

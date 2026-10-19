@@ -41,6 +41,7 @@ public struct WorkflowSettings: Codable, Sendable {
     public var bankingEnabled = true
     public var bankingInputMode: BankingInputMode = .visualWorkflow
     public var bankingRecording: InputRecording?
+    public var macroRepeat = MacroRepeatSettings()
     public var bankingVerification: BankingVerificationMode = .newSuccessIndicator
     public var countFormat: CountFormat = .digitsOnly
     public var inventoryMonitoringEnabled = true
@@ -58,7 +59,7 @@ public struct WorkflowSettings: Codable, Sendable {
     public init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, bankingEnabled, bankingInputMode, bankingRecording, bankingVerification, countFormat, inventoryMonitoringEnabled, bankingCooldownSeconds
+        case schemaVersion, bankingEnabled, bankingInputMode, bankingRecording, macroRepeat, bankingVerification, countFormat, inventoryMonitoringEnabled, bankingCooldownSeconds
         case actionTimeoutSeconds, workflowTimeoutSeconds, recoveryTimeoutSeconds, routeTimeoutSeconds
         case maximumRecoveries, pollSeconds, detectionRetries, skills, repeatSkills, route
     }
@@ -72,6 +73,7 @@ public struct WorkflowSettings: Codable, Sendable {
         bankingEnabled = try read(.bankingEnabled, bankingEnabled)
         bankingInputMode = try read(.bankingInputMode, bankingInputMode)
         bankingRecording = try values.decodeIfPresent(InputRecording.self, forKey: .bankingRecording)
+        macroRepeat = try read(.macroRepeat, macroRepeat)
         bankingVerification = try read(.bankingVerification, bankingVerification)
         countFormat = try read(.countFormat, countFormat)
         inventoryMonitoringEnabled = try read(.inventoryMonitoringEnabled, inventoryMonitoringEnabled)
@@ -91,6 +93,7 @@ public struct WorkflowSettings: Codable, Sendable {
     public func validate() throws {
         try bankingRecording?.validate()
         try route.recording?.validate()
+        try macroRepeat.validate()
         guard schemaVersion == 1,
               actionTimeoutSeconds.isFinite, (0.1...120).contains(actionTimeoutSeconds),
               workflowTimeoutSeconds.isFinite, (1...86400).contains(workflowTimeoutSeconds),
