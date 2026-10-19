@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import SceneKit
 import ApplicationServices
 import AutomationCore
 
@@ -7,11 +8,24 @@ import AutomationCore
 @MainActor
 struct MUAutomatorApp: App {
     @StateObject private var model = SessionModel()
+    @NSApplicationDelegateAdaptor(BackgroundAppDelegate.self) private var delegate
     init() { NSApplication.shared.setActivationPolicy(.regular) }
     var body: some Scene {
-        WindowGroup {
+        Window("MU Automator", id: "main") {
             AppShellView(model: model)
-        }.defaultSize(width: 1100, height: 800)
+        }.defaultSize(width: 1280, height: 820)
+        MenuBarExtra("MU Automator", systemImage: "shield.lefthalf.filled") {
+            MenuBarControls(model: model)
+        }
+        .commands {
+            CommandGroup(replacing: .appTermination) {
+                Button("Quit MU Automator") {
+                    model.stop()
+                    model.capture.stopPreview()
+                    NSApplication.shared.terminate(nil)
+                }.keyboardShortcut("q")
+            }
+        }
     }
 }
 
@@ -43,7 +57,11 @@ private struct AppShellView: View {
             HStack {
                 Text("MU Automator").font(.title.bold())
                 Spacer()
-                Text(model.runner.isWaitingForFocus ? "Waiting for game focus" : model.runner.stage.rawValue)
+                Label(model.statusTitle, systemImage: model.statusSymbol)
+                    .font(.callout.monospaced())
+                Button { BackgroundAppDelegate.hideMainWindow() } label: {
+                    Label("Minimize to menu bar", systemImage: "menubar.arrow.up.rectangle")
+                }.help("Keep automation running and hide this window")
                 Button("Emergency Stop", role: .destructive) { model.stop() }
             }.padding()
             HStack(spacing: 8) {
@@ -65,15 +83,18 @@ private struct AppShellView: View {
             // macOS 26's native TabView can cycle in StatefulTabContainer's
             // accessibility graph when reinserting Dashboard. Mount only the
             // selected screen; durable state stays in the app-owned models.
-            selectedScreen
-                .id(selection)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            HStack(spacing: 0) {
+                selectedScreen
+                    .id(selection)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                Divider()
+                KnightCompanionView(model: model)
+                    .frame(width: 240)
+            }
         }
         .frame(minWidth: 1000, minHeight: 700)
-        .background(WindowCloseObserver {
-            model.stop()
-            model.capture.stopPreview()
-        }.frame(width: 0, height: 0))
+        .background(.ultraThinMaterial)
+        .background(WindowAppearance().frame(width: 0, height: 0))
     }
 
     @ViewBuilder private var selectedScreen: some View {
@@ -280,5 +301,237 @@ struct ActivityLogView: View {
                 }.textSelection(.enabled)
             }
         }.padding()
+    }
+}
+
+// The app owns the session. Hiding its window must never cancel the runner.
+@MainActor
+final class BackgroundAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        Self.showMainWindow()
+        return true
+    }
+
+    static weak var mainWindow: NSWindow?
+
+    static func hideMainWindow() {
+        mainWindow?.orderOut(nil)
+        NSApplication.shared.setActivationPolicy(.accessory)
+    }
+
+    static func showMainWindow() {
+        NSApplication.shared.setActivationPolicy(.regular)
+        mainWindow?.deminiaturize(nil)
+        mainWindow?.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+}
+
+@MainActor
+final class BackgroundWindowView: NSView, NSWindowDelegate {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard let window else { return }
+        BackgroundAppDelegate.mainWindow = window
+        window.delegate = self
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.titlebarAppearsTransparent = true
+        window.isReleasedWhenClosed = false
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        BackgroundAppDelegate.hideMainWindow()
+        return false
+    }
+}
+
+@MainActor
+private struct WindowAppearance: NSViewRepresentable {
+    func makeNSView(context: Context) -> BackgroundWindowView { BackgroundWindowView() }
+    func updateNSView(_ nsView: BackgroundWindowView, context: Context) {}
+}
+
+@MainActor
+private extension SessionModel {
+    var statusTitle: String {
+        if arming { return "Starting in 5 seconds…" }
+        if recorder.active { return "Recording inputs" }
+        if runner.isWaitingForFocus { return "Waiting for game focus" }
+        return runner.stage.rawValue
+    }
+
+    var statusSymbol: String {
+        if runner.lastError != nil || error != nil { return "exclamationmark.triangle.fill" }
+        if runner.stage == .paused || runner.isWaitingForFocus { return "pause.circle.fill" }
+        return runner.active || arming || recorder.active ? "waveform.path" : "shield.checkered"
+    }
+
+    var statusColor: Color {
+        if runner.lastError != nil || error != nil { return .orange }
+        if runner.stage == .paused || runner.isWaitingForFocus { return .yellow }
+        return runner.active || arming || recorder.active ? .cyan : .mint
+    }
+
+    var statusMessage: String {
+        if let error = runner.lastError ?? error { return error }
+        if arming { return "Get ready! Focus your selected game window." }
+        if recorder.active { return "I'm watching your inputs. Stop recording with Control–Option–Command–R." }
+        if runner.isWaitingForFocus { return "Return to your selected game window. I'll wait here." }
+        if runner.stage == .paused { return "Taking a break. Resume when you're ready." }
+        return runner.events.last?.message ?? "Ready when you are! Select your game window and review your setup."
+    }
+}
+
+@MainActor
+private struct MenuBarControls: View {
+    @ObservedObject var model: SessionModel
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Label(model.statusTitle, systemImage: model.statusSymbol)
+        Text("Completed macro runs: \(model.runner.macroRunsCompleted)")
+        if let error = model.runner.lastError { Text(error) }
+        Divider()
+        Button("Show MU Automator") {
+            openWindow(id: "main")
+            BackgroundAppDelegate.showMainWindow()
+        }
+        Button(model.runner.stage == .paused ? "Resume in 5 seconds" : "Pause") {
+            model.pauseOrResume()
+        }.disabled(!model.runner.active || model.arming)
+        Button("Emergency Stop", role: .destructive) { model.stop() }
+        Divider()
+        Button("Quit MU Automator") {
+            model.stop()
+            model.capture.stopPreview()
+            NSApplication.shared.terminate(nil)
+        }
+    }
+}
+
+@MainActor
+private struct KnightCompanionView: View {
+    @ObservedObject var model: SessionModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var scene = KnightScene.make()
+
+    var body: some View {
+        VStack(spacing: 18) {
+            HStack(spacing: 6) {
+                Circle().fill(model.statusColor).frame(width: 7, height: 7)
+                Text("KNIGHT COMPANION").font(.caption2.weight(.semibold)).tracking(2)
+            }
+            VStack(alignment: .leading, spacing: 10) {
+                Label(model.statusTitle, systemImage: model.statusSymbol)
+                    .font(.headline).foregroundStyle(model.statusColor)
+                Text(model.statusMessage).font(.callout).textSelection(.enabled)
+                if model.runner.active && model.runner.stage != .paused && !model.runner.isWaitingForFocus {
+                    ProgressView().controlSize(.small).accessibilityLabel("Automation in progress")
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(16)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20))
+            .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(model.statusColor.opacity(0.35)))
+            .overlay(alignment: .bottom) {
+                Image(systemName: "arrowtriangle.down.fill")
+                    .foregroundStyle(model.statusColor.opacity(0.5)).offset(y: 12)
+            }
+            KnightSceneView(scene: scene, animated: !reduceMotion)
+                .frame(height: 260)
+                .accessibilityLabel("Cute armored knight with a glowing visor and sword")
+            Text("Blade Knight–inspired").font(.headline)
+            Text("Original 3D companion • not official MU artwork")
+                .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            Divider()
+            Label("\(model.runner.macroRunsCompleted) macro runs completed", systemImage: "arrow.triangle.2.circlepath")
+                .font(.caption)
+            Text("Close the window to keep running in the menu bar. Quit ends the session.")
+                .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            Spacer(minLength: 0)
+        }
+        .padding(20)
+        .background(LinearGradient(colors: [.cyan.opacity(0.09), .indigo.opacity(0.12), .clear], startPoint: .topLeading, endPoint: .bottomTrailing))
+    }
+}
+
+@MainActor
+private struct KnightSceneView: NSViewRepresentable {
+    let scene: SCNScene
+    let animated: Bool
+    func makeNSView(context: Context) -> SCNView {
+        let view = SCNView()
+        view.scene = scene
+        view.backgroundColor = .clear
+        view.autoenablesDefaultLighting = true
+        view.antialiasingMode = .multisampling4X
+        updateNSView(view, context: context)
+        return view
+    }
+    func updateNSView(_ view: SCNView, context: Context) {
+        view.isPlaying = animated
+        scene.isPaused = !animated
+    }
+}
+
+// Real, locally rendered geometry: no network, downloads, or image masquerading as 3D.
+@MainActor
+private enum KnightScene {
+    static func make() -> SCNScene {
+        let scene = SCNScene()
+        let knight = SCNNode()
+        scene.rootNode.addChildNode(knight)
+        let steel = NSColor(calibratedRed: 0.22, green: 0.27, blue: 0.40, alpha: 1)
+        let silver = NSColor(calibratedRed: 0.65, green: 0.76, blue: 0.88, alpha: 1)
+        let glow = NSColor.cyan
+        func part(_ geometry: SCNGeometry, _ color: NSColor, _ position: SCNVector3, luminous: Bool = false) -> SCNNode {
+            let material = SCNMaterial()
+            material.diffuse.contents = color
+            material.metalness.contents = luminous ? 0.2 : 0.75
+            material.roughness.contents = 0.28
+            if luminous { material.emission.contents = color }
+            geometry.materials = [material]
+            let node = SCNNode(geometry: geometry)
+            node.position = position
+            knight.addChildNode(node)
+            return node
+        }
+        func box(_ w: CGFloat, _ h: CGFloat, _ d: CGFloat, _ color: NSColor, _ x: Float, _ y: Float, _ z: Float, luminous: Bool = false) {
+            _ = part(SCNBox(width: w, height: h, length: d, chamferRadius: min(w, min(h, d)) * 0.22), color, SCNVector3(x, y, z), luminous: luminous)
+        }
+        box(0.88, 0.78, 0.54, steel, 0, 0, 0)
+        box(1.12, 0.92, 0.80, silver, 0, 0.83, 0)
+        box(0.92, 0.25, 0.10, steel, 0, 0.86, 0.43)
+        box(0.25, 0.08, 0.08, glow, -0.23, 0.88, 0.50, luminous: true)
+        box(0.25, 0.08, 0.08, glow, 0.23, 0.88, 0.50, luminous: true)
+        box(0.12, 0.72, 0.12, steel, 0, 0.90, 0.47)
+        for x: Float in [-0.64, 0.64] {
+            _ = part(SCNSphere(radius: 0.29), silver, SCNVector3(x, 0.20, 0))
+            box(0.26, 0.52, 0.30, steel, x, -0.18, 0)
+            let horn = part(SCNCone(topRadius: 0, bottomRadius: 0.15, height: 0.56), steel, SCNVector3(x * 0.72, 1.42, 0))
+            horn.eulerAngles.z = x > 0 ? -0.4 : 0.4
+        }
+        for x: Float in [-0.25, 0.25] { box(0.36, 0.40, 0.49, silver, x, -0.60, 0.10) }
+        let gem = part(SCNSphere(radius: 0.13), glow, SCNVector3(0, 0.12, 0.31), luminous: true)
+        gem.scale = SCNVector3(0.8, 1.3, 0.5)
+        box(0.12, 1.12, 0.08, silver, 0.90, 0.0, 0.23)
+        box(0.45, 0.10, 0.14, glow, 0.90, -0.32, 0.23, luminous: true)
+        box(0.09, 0.27, 0.10, steel, 0.90, -0.50, 0.23)
+        knight.eulerAngles = SCNVector3(-0.08, -0.28, 0)
+        let rise = SCNAction.moveBy(x: 0, y: 0.09, z: 0, duration: 1.6)
+        let fall = rise.reversed()
+        rise.timingMode = .easeInEaseOut
+        fall.timingMode = .easeInEaseOut
+        knight.runAction(.repeatForever(.sequence([rise, fall])))
+        let camera = SCNNode()
+        camera.camera = SCNCamera()
+        camera.camera?.usesOrthographicProjection = true
+        camera.camera?.orthographicScale = 1.65
+        camera.position = SCNVector3(0, 0.40, 6)
+        scene.rootNode.addChildNode(camera)
+        return scene
     }
 }

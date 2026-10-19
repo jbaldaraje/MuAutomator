@@ -16,6 +16,14 @@ The script runs tests, builds an Apple Silicon app, creates its icon, ad-hoc sig
 
 You can also open `MUAutomator.xcodeproj`, select the shared MUAutomator scheme and My Mac, and build/run with Command-R. The project scheme builds the app; run package tests with `swift test` or open `Package.swift` in Xcode to run its tests. The project scheme does not include the package test targets. `swift run MUAutomator` is also supported; use a consistent app bundle for permission testing because macOS grants permissions to an application identity.
 
+## Glass interface and menu bar mode
+
+The main window uses native translucent material, with a floating, locally rendered 3D knight and a status bubble that follows the real automation state, focus waits, recording and errors. Reduce Motion in macOS Accessibility settings disables the knight's floating animation. The companion is original Blade Knight–inspired geometry, not official MU game artwork. Official artwork retrieval from `muonline.webzen.com` was blocked by the cloud network proxy; that asset replacement is outstanding.
+
+Use **Minimize to menu bar** or the red close button to hide the window while retaining the current session. The shield icon in the macOS menu bar shows status and completed macro runs, and offers Show, Pause/Resume, Emergency Stop and Quit. Show restores the same window. Quit (or Command-Q) ends the app; closing the window does not. Background mode does not bypass game-focus or permission checks: input waits until the selected game is focused. This does not keep automation running through Mac sleep or logout.
+
+Mac acceptance checks (not executable on Linux): build with the commands above; confirm desktop translucency in light/dark appearance; toggle Reduce Motion; start a configured session, close the main window, return focus to the selected game and confirm progress from the menu bar; pause, stop, reopen and quit from that menu. Run `swift test -j 2` on macOS for the new close/hide/reopen lifecycle checks. Existing macOS CI builds both the Swift package and Xcode app bundle.
+
 ## Modes
 
 - **Jewels only:** replay your recorded jewel workflow once, a set number of times, or for a set number of hours; alternatively use the image workflow to open inventory/bank, deposit with visual verification, close panels, then stop. It does not run the separate Helper, skill or recovery modules; the recorded sequence contains only the inputs you chose to capture.

@@ -45,6 +45,34 @@ final class WindowCloseObservationTests: XCTestCase {
         XCTAssertEqual(stops, 0)
     }
 
+    @MainActor func testCloseHidesWindowWithoutPostingCloseAndReopenRestoresIt() {
+        let owner = makeWindow()
+        let view = BackgroundWindowView()
+        owner.contentView?.addSubview(view)
+        var closes = 0
+        let observer = WindowCloseObservationView { closes += 1 }
+        owner.contentView?.addSubview(observer)
+        defer {
+            observer.stopObserving()
+            owner.delegate = nil
+            owner.close()
+            BackgroundAppDelegate.mainWindow = nil
+            NSApplication.shared.setActivationPolicy(.regular)
+        }
+        owner.makeKeyAndOrderFront(nil)
+        owner.performClose(nil)
+        XCTAssertFalse(owner.isVisible)
+        XCTAssertEqual(closes, 0, "Close must hide rather than destroy the session window")
+        XCTAssertTrue(BackgroundAppDelegate.mainWindow === owner)
+        BackgroundAppDelegate.showMainWindow()
+        XCTAssertTrue(owner.isVisible)
+        XCTAssertEqual(closes, 0)
+    }
+
+    @MainActor func testAppStaysAliveWithoutVisibleWindows() {
+        XCTAssertFalse(BackgroundAppDelegate().applicationShouldTerminateAfterLastWindowClosed(NSApplication.shared))
+    }
+
     @MainActor private func makeWindow() -> NSWindow {
         _ = NSApplication.shared
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 200),
