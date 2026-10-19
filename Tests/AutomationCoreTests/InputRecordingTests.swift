@@ -2,6 +2,40 @@ import XCTest
 @testable import AutomationCore
 
 final class InputRecordingTests: XCTestCase {
+    func testRepeatDefaultsAndSettingsRoundTrip() throws {
+        let legacy = try JSONDecoder().decode(WorkflowSettings.self, from: Data("{}".utf8))
+        XCTAssertEqual(legacy.macroRepeat.mode, .once)
+        var settings = WorkflowSettings()
+        settings.macroRepeat.mode = .count; settings.macroRepeat.count = 7
+        settings.macroRepeat.durationSeconds = 8 * 3600; settings.macroRepeat.delayBetweenRunsSeconds = 2
+        let loaded = try JSONDecoder().decode(WorkflowSettings.self, from: JSONEncoder().encode(settings))
+        try loaded.validate()
+        XCTAssertEqual(loaded.macroRepeat, settings.macroRepeat)
+    }
+
+    func testRepeatPolicyStopsAtExactCountAndDurationBoundary() throws {
+        var repetition = MacroRepeatSettings()
+        XCTAssertTrue(repetition.allowsNextRun(completedRuns: 0, elapsedSeconds: 0))
+        XCTAssertFalse(repetition.allowsNextRun(completedRuns: 1, elapsedSeconds: 0))
+        repetition.mode = .count; repetition.count = 3
+        XCTAssertTrue(repetition.allowsNextRun(completedRuns: 2, elapsedSeconds: 100))
+        XCTAssertFalse(repetition.allowsNextRun(completedRuns: 3, elapsedSeconds: 100))
+        repetition.mode = .duration; repetition.durationSeconds = 8 * 3600
+        XCTAssertTrue(repetition.allowsNextRun(completedRuns: 100, elapsedSeconds: 8 * 3600 - 0.01))
+        XCTAssertFalse(repetition.allowsNextRun(completedRuns: 100, elapsedSeconds: 8 * 3600))
+    }
+
+    func testRepeatRejectsInvalidCountHoursAndDelay() {
+        var repetition = MacroRepeatSettings(); repetition.count = 0
+        XCTAssertThrowsError(try repetition.validate())
+        repetition.count = 1; repetition.durationSeconds = .nan
+        XCTAssertThrowsError(try repetition.validate())
+        repetition.durationSeconds = 0
+        XCTAssertThrowsError(try repetition.validate())
+        repetition.durationSeconds = 3600; repetition.delayBetweenRunsSeconds = -.infinity
+        XCTAssertThrowsError(try repetition.validate())
+    }
+
     func testRecordingTimingAndWindowSizeRoundTripWithSettings() throws {
         var recording = InputRecording(windowWidth: 1024, windowHeight: 768)
         recording.steps = [.init(action: .point(x: 0.1, y: 0.2), delayBeforeSeconds: 1.5, holdSeconds: 0.15),

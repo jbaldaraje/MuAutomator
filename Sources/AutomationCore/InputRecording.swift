@@ -5,6 +5,61 @@ public enum BankingInputMode: String, Codable, CaseIterable, Sendable {
     public var title: String { self == .recordedInput ? "Recorded inputs" : "Calibrated image workflow" }
 }
 
+public enum MacroRepeatMode: String, Codable, CaseIterable, Sendable {
+    case once, count, duration
+    public var title: String {
+        switch self {
+        case .once: return "Once"
+        case .count: return "Number of times"
+        case .duration: return "For hours"
+        }
+    }
+}
+
+public struct MacroRepeatSettings: Codable, Equatable, Sendable {
+    public var mode: MacroRepeatMode = .once
+    /// Total runs, including the first playback.
+    public var count = 1
+    public var durationSeconds: Double = 3600
+    public var delayBetweenRunsSeconds: Double = 0
+    public init() {}
+
+    private enum CodingKeys: String, CodingKey { case mode, count, durationSeconds, delayBetweenRunsSeconds }
+    public init(from decoder: Decoder) throws {
+        self.init()
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        mode = try values.decodeIfPresent(MacroRepeatMode.self, forKey: .mode) ?? mode
+        count = try values.decodeIfPresent(Int.self, forKey: .count) ?? count
+        durationSeconds = try values.decodeIfPresent(Double.self, forKey: .durationSeconds) ?? durationSeconds
+        delayBetweenRunsSeconds = try values.decodeIfPresent(Double.self, forKey: .delayBetweenRunsSeconds) ?? delayBetweenRunsSeconds
+    }
+    public func validate() throws {
+        guard (1...1_000_000).contains(count) else {
+            throw WorkflowFailure.prerequisite("Macro run count must be between 1 and 1,000,000")
+        }
+        guard durationSeconds.isFinite, durationSeconds > 0, durationSeconds <= 31_536_000 else {
+            throw WorkflowFailure.prerequisite("Macro hours must be greater than zero and no more than 8,760")
+        }
+        guard delayBetweenRunsSeconds.isFinite, (0...86400).contains(delayBetweenRunsSeconds) else {
+            throw WorkflowFailure.prerequisite("Delay between macro runs must be between 0 and 86,400 seconds")
+        }
+    }
+    public func allowsNextRun(completedRuns: Int, elapsedSeconds: Double) -> Bool {
+        switch mode {
+        case .once: return completedRuns == 0
+        case .count: return completedRuns < count
+        case .duration: return elapsedSeconds < durationSeconds
+        }
+    }
+    public var summary: String {
+        switch mode {
+        case .once: return "Run once"
+        case .count: return "Run \(count) times total"
+        case .duration: return String(format: "Repeat for %.4g hours, then finish the current cycle", durationSeconds / 3600)
+        }
+    }
+}
+
 public struct RecordedInputStep: Codable, Identifiable, Equatable, Sendable {
     public var id = UUID()
     public var action: GameAction

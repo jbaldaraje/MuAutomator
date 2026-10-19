@@ -155,10 +155,17 @@ struct DashboardView: View {
                             ForEach(AutomationMode.allCases, id: \.self) { Text($0.title).tag($0) }
                         }.pickerStyle(.segmented)
                         Text(model.settings.bankingInputMode == .recordedInput
-                             ? "Replay your recorded clicks, key holds and timing. Jewel transfer is not verified by playback alone. OCR recovery remains available in full automation."
+                             ? "Replay your recorded clicks, key holds and timing using the repeat limit below. Jewel transfer is not verified by playback alone. OCR recovery remains available in full automation."
                              : model.configuration.mode == .jewelsOnly
                              ? "Bank jewels already in inventory, verify the transfer, close panels, then stop."
                              : "Bank, activate enabled helper, monitor farming, and run enabled skills and recovery.")
+                        if model.settings.bankingInputMode == .recordedInput {
+                            MacroRepeatEditor(repetition: $model.settings.macroRepeat)
+                            if model.configuration.mode == .fullAutomation {
+                                Text("Full automation continues its other enabled modules after macro repeats finish. Jewels only stops after the macro.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
                         Toggle("Dry run (use Detect only in Calibration)", isOn: $model.configuration.dryRun)
                         Toggle("Strict gameplay recognition (require normalGameplay)", isOn: $model.configuration.strictGameplayRecognition)
                         Text(model.configuration.strictGameplayRecognition
@@ -176,6 +183,9 @@ struct DashboardView: View {
                         Text("Window: \(capture.selectedID.map { String($0) } ?? "not selected")")
                         Text("Game state: \(model.runner.lastObservation?.state.rawValue ?? "unknown")")
                         Text("Last verified result: \(model.runner.lastVerifiedAction ?? "none")")
+                        if model.settings.bankingInputMode == .recordedInput {
+                            Text("Completed macro runs: \(model.runner.macroRunsCompleted)")
+                        }
                         if let error = model.runner.lastError { Text(error).foregroundStyle(.red).textSelection(.enabled) }
                         Text("Screen Recording: \(permissionLabel(permissions.screenRecordingAllowed)) • Accessibility: \(permissionLabel(permissions.accessibilityAllowed))")
                         Button("Request Accessibility for live input") { model.requestInputPermission() }
