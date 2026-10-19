@@ -6,31 +6,392 @@ private final class FakeIO: WorkflowIO {
     var frames: [[TargetRole]] = []
     var actions: [GameAction] = []
     var unsafe = false
+    var focused = true
+    var focusLossBeforePress = false
+    var focusLossAfterPress = false
+    var observationCount = 0
+    var resumeChecks = 0
+    var refocusAttempts = 0
+    var refocusFailuresRemaining = 0
+    var onRefocus: (() -> Void)?
+    var onObservation: (() -> Void)?
     var texts: [TargetRole: String] = [:]
     var scores: [TargetRole: Double] = [:]
     var recordedSteps: [RecordedInputStep] = []
     var configuredTargets: Set<TargetRole> = []
     var onAction: ((GameAction) -> Void)?
     func checkSafety() throws {
-        if unsafe { throw WorkflowFailure.unsafe("Focus lost") }
+        if unsafe { throw WorkflowFailure.unsafe("Window closed or permissions unavailable") }
+        if !focused { throw WorkflowFailure.focusUnavailable("Another window has focus") }
     }
     func hasCalibratedTarget(_ role: TargetRole) -> Bool { configuredTargets.contains(role) }
     func observe() async throws -> Observation {
         try checkSafety()
         let roles = frames.count > 1 ? frames.removeFirst() : (frames.first ?? [])
-        return Observation(matches: Dictionary(uniqueKeysWithValues: roles.map { ($0, 0.99) }), text: texts, scores: scores)
+        observationCount += 1
+        let value = Observation(matches: Dictionary(uniqueKeysWithValues: roles.map { ($0, 0.99) }), text: texts, scores: scores)
+        onObservation?()
+        return value
     }
     func perform(_ action: GameAction) async throws {
         try Task.checkCancellation(); try checkSafety()
+        if focusLossBeforePress {
+            focusLossBeforePress = false; focused = false
+            throw WorkflowFailure.focusUnavailable("Focus changed before the press")
+        }
         actions.append(action); onAction?(action)
+        if focusLossAfterPress {
+            focusLossAfterPress = false; focused = false
+            throw WorkflowFailure.focusLostAfterInput("Focus changed during a delivered press")
+        }
     }
     func performRecorded(_ step: RecordedInputStep) async throws {
         recordedSteps.append(step)
         try await perform(step.action)
     }
+    func prepareToResumeAfterFocus() async throws { try checkSafety(); resumeChecks += 1 }
+    func refocusSelectedWindow() async throws {
+        try Task.checkCancellation()
+        refocusAttempts += 1
+        if refocusFailuresRemaining > 0 {
+            refocusFailuresRemaining -= 1
+            throw WorkflowFailure.focusUnavailable("Game cannot regain focus yet")
+        }
+        focused = true; try checkSafety(); onRefocus?()
+    }
 }
 
 final class WorkflowTests: XCTestCase {
+    func testAutoRefocusSettingsPreserveLegacyDefaultsAndCustomInterval() throws {
+        let legacy = try JSONDecoder().decode(WorkflowSettings.self, from: Data("{}".utf8))
+        XCTAssertFalse(legacy.autoRefocus.enabled)
+        XCTAssertEqual(legacy.autoRefocus.delaySeconds, 1800)
+        var settings = legacy; settings.autoRefocus.enabled = true; settings.autoRefocus.delaySeconds = 3600
+        let decoded = try JSONDecoder().decode(WorkflowSettings.self, from: JSONEncoder().encode(settings))
+        XCTAssertEqual(decoded.autoRefocus, settings.autoRefocus)
+        for invalid in [0, -1, Double.infinity, Double.nan, 31_536_001] {
+            settings.autoRefocus.delaySeconds = invalid
+            XCTAssertThrowsError(try settings.validate())
+        }
+    }
+
+    @MainActor func testAutoRefocusResumesWaitingMacroWithoutRestartingDeliveredInputs() async throws {
+        let io = FakeIO(); io.frames = [[]]
+        io.onAction = { _ in if io.actions.count == 1 { io.focused = false } }
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput
+        settings.bankingRecording = recording([.key(12), .key(13)])
+        settings.autoRefocus.enabled = true; settings.autoRefocus.delaySeconds = 0.05
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await waitForFocusWait(runner)
+        XCTAssertEqual(io.actions, [.key(12)])
+        try await finish(runner)
+        XCTAssertGreaterThan(io.refocusAttempts, 0)
+        XCTAssertEqual(io.actions, [.key(12), .key(13)])
+        XCTAssertEqual(runner.stage, .completed)
+        let attempts = io.refocusAttempts
+        try await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertEqual(io.refocusAttempts, attempts, "Completed sessions must not be restarted")
+    }
+
+    @MainActor func testEnabledAutoRefocusResumesManualPause() async throws {
+        let io = FakeIO(); io.frames = [[]]
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput
+        settings.bankingRecording = recording([.key(12)])
+        settings.autoRefocus.enabled = true; settings.autoRefocus.delaySeconds = 0.05
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        runner.pause(); io.focused = false
+        XCTAssertTrue(io.actions.isEmpty)
+        try await finish(runner)
+        XCTAssertGreaterThan(io.refocusAttempts, 0)
+        XCTAssertEqual(io.actions, [.key(12)])
+        XCTAssertEqual(runner.stage, .completed)
+    }
+
+    @MainActor func testAutoRefocusRetriesTemporaryFailureWithoutDeliveringInputElsewhere() async throws {
+        let io = FakeIO(); io.frames = [[]]; io.focused = false; io.refocusFailuresRemaining = 1
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput
+        settings.bankingRecording = recording([.key(12)])
+        settings.autoRefocus.enabled = true; settings.autoRefocus.delaySeconds = 0.05
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await waitUntil { io.refocusAttempts == 1 }
+        XCTAssertTrue(io.actions.isEmpty)
+        XCTAssertTrue(runner.active)
+        try await finish(runner)
+        XCTAssertGreaterThanOrEqual(io.refocusAttempts, 2)
+        XCTAssertEqual(io.actions, [.key(12)])
+        XCTAssertEqual(runner.stage, .completed)
+    }
+
+    @MainActor func testAutoRefocusRechecksGameEvidenceBeforeContinuing() async throws {
+        let io = FakeIO(); io.frames = [[]]; io.focused = false
+        io.onRefocus = { io.frames = [[.deathIndicator]] }
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput
+        settings.bankingRecording = recording([.key(12)])
+        settings.autoRefocus.enabled = true; settings.autoRefocus.delaySeconds = 0.05
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await finish(runner)
+        XCTAssertGreaterThan(io.refocusAttempts, 0)
+        XCTAssertTrue(io.actions.isEmpty)
+        XCTAssertEqual(runner.stage, .waitingForManualIntervention)
+    }
+
+    @MainActor func testEmergencyStopCancelsPendingAutoRefocus() async throws {
+        let io = FakeIO(); io.frames = [[]]; io.focused = false
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput
+        settings.bankingRecording = recording([.key(12)])
+        settings.autoRefocus.enabled = true; settings.autoRefocus.delaySeconds = 0.2
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await waitForFocusWait(runner)
+        runner.stop(); try await finish(runner)
+        try await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertEqual(io.refocusAttempts, 0)
+        XCTAssertTrue(io.actions.isEmpty)
+        XCTAssertEqual(runner.stage, .cancelled)
+    }
+
+    @MainActor func testAutoRefocusAlsoRunsDuringIdleMonitoring() async throws {
+        let io = FakeIO(); io.frames = [[]]
+        var settings = WorkflowSettings(); settings.bankingEnabled = false; settings.pollSeconds = 0.01
+        settings.autoRefocus.enabled = true; settings.autoRefocus.delaySeconds = 0.05
+        var config = AutomationConfiguration(); config.dryRun = false
+        config.mode = .fullAutomation; config.helperEnabled = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await waitUntil { io.refocusAttempts > 0 }
+        XCTAssertTrue(runner.active)
+        XCTAssertTrue(io.actions.isEmpty)
+        runner.stop(); try await finish(runner)
+        XCTAssertEqual(runner.stage, .cancelled)
+    }
+
+    @MainActor func testVisualTransferFocusWaitFreezesVerificationAndDoesNotRepeatTransfer() async throws {
+        let io = FakeIO(); configureBankingWithoutGameplay(io)
+        let original = io.onAction
+        io.onAction = { action in
+            original?(action)
+            if action == .click(.transferButton) { io.focused = false }
+        }
+        var settings = WorkflowSettings(); settings.actionTimeoutSeconds = 0.1; settings.pollSeconds = 0.01
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await waitForFocusWait(runner)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(io.actions.filter { $0 == .click(.transferButton) }.count, 1)
+        io.focused = true
+        try await finish(runner)
+        XCTAssertEqual(runner.stage, .completed)
+        XCTAssertEqual(io.actions.filter { $0 == .click(.transferButton) }.count, 1)
+    }
+
+    @MainActor func testDeliveredVisualTransferIsVerifiedAfterFocusReturnsWithoutRetry() async throws {
+        let io = FakeIO(); configureBankingWithoutGameplay(io)
+        let original = io.onAction
+        io.onAction = { action in
+            original?(action)
+            if action == .click(.transferButton) { io.focusLossAfterPress = true }
+        }
+        var settings = WorkflowSettings(); settings.actionTimeoutSeconds = 0.1; settings.pollSeconds = 0.01
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await waitForFocusWait(runner)
+        io.focused = true
+        try await finish(runner)
+        XCTAssertEqual(runner.stage, .completed)
+        XCTAssertEqual(io.actions.filter { $0 == .click(.transferButton) }.count, 1)
+    }
+
+    @MainActor func testRecordedReturnRouteTimeoutExcludesFocusWait() async throws {
+        let io = FakeIO(); io.frames = [[.respawnIndicator]]
+        io.onAction = { _ in
+            if io.actions.count == 1 { io.focused = false }
+            else { io.frames = [[.destinationLandmark]] }
+        }
+        var settings = WorkflowSettings(); settings.bankingEnabled = false; settings.routeTimeoutSeconds = 0.1
+        settings.route.recording = recording([.key(12), .key(13)])
+        var config = AutomationConfiguration(); config.dryRun = false; config.mode = .fullAutomation
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io, routeTest: true)
+        try await waitForFocusWait(runner)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        io.focused = true
+        try await finish(runner)
+        XCTAssertEqual(io.actions, [.key(12), .key(13)])
+        XCTAssertEqual(runner.stage, .completed)
+        XCTAssertEqual(runner.lastVerifiedAction, "farming destination")
+    }
+
+    @MainActor private func waitForFocusWait(_ runner: AutomationCoordinator) async throws {
+        let until = Date().addingTimeInterval(1)
+        while runner.active && !runner.isWaitingForFocus && Date() < until {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertTrue(runner.isWaitingForFocus)
+    }
+
+    @MainActor func testFocusLossKeepsSessionAliveAndResumesPendingMacroInput() async throws {
+        let io = FakeIO(); io.frames = [[]]; io.focused = false
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput
+        settings.bankingRecording = recording([.key(12), .key(13)])
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await waitForFocusWait(runner)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertTrue(runner.active)
+        XCTAssertEqual(runner.stage, .waitingForFocus)
+        XCTAssertTrue(io.actions.isEmpty)
+        XCTAssertNil(runner.lastError)
+        XCTAssertEqual(io.refocusAttempts, 0, "Disabled auto-refocus must leave the foreground app alone")
+        io.focused = true
+        try await finish(runner)
+        XCTAssertEqual(io.actions, [.key(12), .key(13)])
+        XCTAssertEqual(runner.stage, .completed)
+        XCTAssertGreaterThan(io.resumeChecks, 0)
+    }
+
+    @MainActor func testFocusLossBetweenStepsDoesNotReplayDeliveredStepOrConsumeSessionTime() async throws {
+        let io = FakeIO(); io.frames = [[]]
+        io.onAction = { _ in if io.actions.count == 1 { io.focused = false } }
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput
+        settings.workflowTimeoutSeconds = 1
+        settings.bankingRecording = recording([.key(12), .key(13)])
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await waitForFocusWait(runner)
+        try await Task.sleep(nanoseconds: 1_100_000_000)
+        XCTAssertEqual(io.actions, [.key(12)])
+        io.focused = true
+        try await finish(runner)
+        XCTAssertEqual(io.actions, [.key(12), .key(13)])
+        XCTAssertEqual(runner.stage, .completed)
+    }
+
+    @MainActor func testFocusChangeBeforePressRetriesOnlyUnsentInput() async throws {
+        let io = FakeIO(); io.frames = [[]]; io.focusLossBeforePress = true
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput
+        settings.bankingRecording = recording([.key(12)])
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await waitForFocusWait(runner)
+        XCTAssertTrue(io.actions.isEmpty)
+        io.focused = true
+        try await finish(runner)
+        XCTAssertEqual(io.actions, [.key(12)])
+        XCTAssertEqual(runner.stage, .completed)
+    }
+
+    @MainActor func testFocusLossDuringDeliveredPressNeverRepeatsThatPress() async throws {
+        let io = FakeIO(); io.frames = [[]]; io.focusLossAfterPress = true
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput
+        settings.bankingRecording = recording([.point(x: 0.3, y: 0.4), .key(13)])
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await waitForFocusWait(runner)
+        XCTAssertEqual(io.actions, [.point(x: 0.3, y: 0.4)])
+        io.focused = true
+        try await finish(runner)
+        XCTAssertEqual(io.actions, [.point(x: 0.3, y: 0.4), .key(13)])
+        XCTAssertEqual(runner.stage, .completed)
+    }
+
+    @MainActor func testManualPauseWhileWaitingDoesNotAutoResumeOnFocusReturn() async throws {
+        let io = FakeIO(); io.frames = [[]]; io.focused = false
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput
+        settings.bankingRecording = recording([.key(12)])
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await waitForFocusWait(runner)
+        runner.pause(); io.focused = true
+        let until = Date().addingTimeInterval(1)
+        while runner.isWaitingForFocus && Date() < until { try await Task.sleep(nanoseconds: 5_000_000) }
+        XCTAssertEqual(runner.stage, .paused)
+        XCTAssertTrue(io.actions.isEmpty)
+        try runner.resume(); try await finish(runner)
+        XCTAssertEqual(io.actions, [.key(12)])
+        XCTAssertEqual(runner.stage, .completed)
+    }
+
+    @MainActor func testFocusWaitCanBeCancelledWithoutRestoringGameFocus() async throws {
+        let io = FakeIO(); io.frames = [[]]; io.focused = false
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput
+        settings.bankingRecording = recording([.key(12)])
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await waitForFocusWait(runner)
+        runner.stop(); try await finish(runner)
+        XCTAssertEqual(runner.stage, .cancelled)
+        XCTAssertFalse(runner.isWaitingForFocus)
+        XCTAssertTrue(io.actions.isEmpty)
+    }
+
+    @MainActor func testPermanentFailureWhileWaitingStillStopsSession() async throws {
+        let io = FakeIO(); io.frames = [[]]; io.focused = false
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput
+        settings.bankingRecording = recording([.key(12)])
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await waitForFocusWait(runner)
+        io.unsafe = true
+        try await finish(runner)
+        XCTAssertEqual(runner.stage, .waitingForManualIntervention)
+        XCTAssertTrue(io.actions.isEmpty)
+    }
+
+    @MainActor func testFrameCapturedBeforeFocusWaitIsDiscardedBeforeInput() async throws {
+        let io = FakeIO(); io.frames = [[]]
+        io.onObservation = {
+            if io.observationCount == 1 { io.focused = false; io.frames = [[.deathIndicator]] }
+        }
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput
+        settings.bankingRecording = recording([.key(12)])
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await waitForFocusWait(runner)
+        io.focused = true
+        try await finish(runner)
+        XCTAssertGreaterThanOrEqual(io.observationCount, 2)
+        XCTAssertTrue(io.actions.isEmpty)
+        XCTAssertEqual(runner.stage, .waitingForManualIntervention)
+    }
+
+    @MainActor func testMacroHoursExcludeBackgroundFocusWait() async throws {
+        let io = FakeIO(); io.frames = [[]]
+        io.onAction = { _ in if io.actions.count == 1 { io.focused = false } }
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput; settings.pollSeconds = 0.01
+        settings.bankingRecording = recording([.key(12)])
+        settings.bankingRecording?.tailDelaySeconds = 0.05
+        settings.macroRepeat.mode = .duration; settings.macroRepeat.durationSeconds = 0.2
+        var config = AutomationConfiguration(); config.dryRun = false
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await waitForFocusWait(runner)
+        try await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertEqual(io.actions, [.key(12)])
+        io.focused = true
+        try await finish(runner)
+        XCTAssertGreaterThan(runner.macroRunsCompleted, 1)
+        XCTAssertEqual(runner.stage, .completed)
+    }
+
     @MainActor func testMacroHoursExcludesPausedTime() async throws {
         let io = FakeIO(); io.frames = [[]]
         var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput; settings.pollSeconds = 0.01
@@ -570,7 +931,7 @@ final class WorkflowTests: XCTestCase {
         XCTAssertEqual(io.actions.count, 1)
     }
 
-    @MainActor func testFocusLossAfterTransferStopsFurtherInput() async throws {
+    @MainActor func testPermanentFailureAfterTransferStopsFurtherInput() async throws {
         let io = FakeIO(); io.frames = [[.inventoryPanel, .bankTitle, .transferButton]]
         io.onAction = { _ in io.unsafe = true }
         let runner = AutomationCoordinator()

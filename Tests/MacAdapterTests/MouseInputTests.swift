@@ -4,6 +4,42 @@ import CoreGraphics
 import AutomationCore
 
 final class MouseInputTests: XCTestCase {
+    @MainActor func testFocusLossDuringMouseHoldReleasesAndMarksAlreadyDelivered() async {
+        var events: [CGEventType] = []
+        do {
+            try await MacMouseInput.click(at: CGPoint(x: 100, y: 100), source: nil, settleNanoseconds: 0,
+                                         post: { events.append($0.type) },
+                                         whileHeld: { throw WorkflowFailure.focusUnavailable("Another window") }, check: {})
+            XCTFail("Expected focus interruption")
+        } catch WorkflowFailure.focusLostAfterInput {
+            XCTAssertEqual(events, [.mouseMoved, .leftMouseDown, .leftMouseUp])
+        } catch { XCTFail("Incorrect delivery classification: \(error)") }
+    }
+
+    @MainActor func testFocusLossDuringKeyHoldReleasesAndMarksAlreadyDelivered() async {
+        var events: [CGEventType] = []
+        do {
+            try await MacMouseInput.key(code: 12, source: nil, post: { events.append($0.type) },
+                                       whileHeld: { throw WorkflowFailure.focusUnavailable("Another window") }, check: {})
+            XCTFail("Expected focus interruption")
+        } catch WorkflowFailure.focusLostAfterInput {
+            XCTAssertEqual(events, [.keyDown, .keyUp])
+        } catch { XCTFail("Incorrect delivery classification: \(error)") }
+    }
+
+    @MainActor func testFocusLossBeforePressIsNotMarkedDelivered() async {
+        var events: [CGEventType] = []
+        do {
+            try await MacMouseInput.click(at: CGPoint(x: 100, y: 100), source: nil, settleNanoseconds: 0,
+                                         post: { events.append($0.type) }) {
+                throw WorkflowFailure.focusUnavailable("Another window")
+            }
+            XCTFail("Expected focus interruption")
+        } catch WorkflowFailure.focusUnavailable {
+            XCTAssertTrue(events.isEmpty)
+        } catch { XCTFail("Incorrect delivery classification: \(error)") }
+    }
+
     @MainActor func testInterruptedRecordedKeyHoldReleasesKey() async {
         var events: [CGEventType] = []
         do {

@@ -212,7 +212,9 @@ final class SessionModel: ObservableObject {
             do {
                 try await Task.sleep(nanoseconds: 5_000_000_000)
                 try Task.checkCancellation()
-                try runner.resume(); error = nil
+                // The optional refocus timer can resume during this countdown.
+                if runner.stage == .paused { try runner.resume() }
+                error = nil
             } catch is CancellationError { error = "Resume cancelled" }
             catch { self.error = error.localizedDescription }
             arming = false; armTask = nil

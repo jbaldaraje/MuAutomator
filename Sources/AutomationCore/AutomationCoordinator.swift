@@ -12,17 +12,21 @@ public final class AutomationCoordinator {
     public var onChange: (() -> Void)?
     private var task: Task<Void, Never>?
     private var paused = false
-    private var pauseStarted: Date?
-    private var pausedSeconds = 0.0
+    public private(set) var isWaitingForFocus = false
+    private var suspensionStarted: Date?
+    private var suspendedSeconds = 0.0
+    private var suspensionRevision = 0
+    private var focusResumeStage: WorkflowStage = .idle
     private var started = Date()
-    private var deadline = Date()
+    private var deadline = 0.0
     private var settings = WorkflowSettings()
     private var config = AutomationConfiguration()
     private var io: (any WorkflowIO)?
     private var resumeStage: WorkflowStage = .idle
-    private var skillTimes: [UUID: Date] = [:]
+    private var skillTimes: [UUID: Double] = [:]
     private var routeTest = false
     private var macroUsesOwnLimit = false
+    private var refocusTimerStarted = Date()
 
     public init() {}
     public var active: Bool { task != nil }
@@ -43,11 +47,13 @@ public final class AutomationCoordinator {
                 throw WorkflowFailure.prerequisite("Record the jewel workflow first")
             }
         }
-        try io.checkSafety()
+        do { try io.checkSafety() } catch WorkflowFailure.focusUnavailable { }
         self.io = io; self.config = configuration; self.settings = settings
         self.routeTest = routeTest
-        started = Date(); deadline = started.addingTimeInterval(settings.workflowTimeoutSeconds)
-        skillTimes = [:]; paused = false; pauseStarted = nil; pausedSeconds = 0
+        started = Date(); skillTimes = [:]; paused = false; isWaitingForFocus = false
+        refocusTimerStarted = Date()
+        suspensionStarted = nil; suspendedSeconds = 0; suspensionRevision = 0
+        deadline = activeTime() + settings.workflowTimeoutSeconds
         lastError = nil; lastVerifiedAction = nil; macroRunsCompleted = 0; macroUsesOwnLimit = false
         transition(.initializing, "Workflow started: \(configuration.mode.title)")
         task = Task { [weak self] in
@@ -70,18 +76,19 @@ public final class AutomationCoordinator {
 
     public func pause() {
         guard task != nil, !paused else { return }
-        paused = true; pauseStarted = Date(); resumeStage = stage
+        resumeStage = isWaitingForFocus ? focusResumeStage : stage
+        paused = true; suspensionRevision += 1; updateSuspensionClock()
+        refocusTimerStarted = Date()
         transition(.paused, "Paused by user")
     }
     public func resume() throws {
         guard paused, let io else { throw CoordinatorError.invalidTransition }
-        try io.checkSafety()
-        if let pauseStarted { pausedSeconds += Date().timeIntervalSince(pauseStarted) }
-        pauseStarted = nil; paused = false
-        transition(resumeStage, "Resumed; next action requires fresh visual evidence")
+        do { try io.checkSafety() } catch WorkflowFailure.focusUnavailable { }
+        paused = false; updateSuspensionClock()
+        transition(isWaitingForFocus ? .waitingForFocus : resumeStage, "Resumed; waiting for the selected game if it is not focused")
     }
     public func stop() {
-        task?.cancel(); paused = false
+        task?.cancel(); paused = false; updateSuspensionClock()
         transition(.cancelled, "Emergency stop requested")
     }
 
@@ -92,37 +99,134 @@ public final class AutomationCoordinator {
         stage = value; onChange?()
     }
 
-    private func gate() async throws {
-        try Task.checkCancellation()
-        while paused {
-            try await Task.sleep(nanoseconds: 100_000_000)
-            try Task.checkCancellation()
+    private func updateSuspensionClock() {
+        if paused || isWaitingForFocus {
+            if suspensionStarted == nil { suspensionStarted = Date() }
+        } else if let suspensionStarted {
+            suspendedSeconds += Date().timeIntervalSince(suspensionStarted)
+            self.suspensionStarted = nil
         }
-        guard macroUsesOwnLimit || Date() < deadline else { throw WorkflowFailure.timeout("Maximum workflow duration reached") }
+    }
+
+    private func waitForFocus(_ reason: String) async throws {
         guard let io else { throw CancellationError() }
-        try io.checkSafety()
+        focusResumeStage = paused ? resumeStage : stage
+        isWaitingForFocus = true; suspensionRevision += 1; updateSuspensionClock()
+        if !paused { refocusTimerStarted = Date() }
+        transition(paused ? .paused : .waitingForFocus, "Waiting for game focus: \(reason). No new presses will be sent.")
+        var ready = false
+        defer {
+            isWaitingForFocus = false; updateSuspensionClock()
+            if ready {
+                transition(paused ? .paused : focusResumeStage,
+                           paused ? "Game focus restored; still paused by user" : "Game focus restored; continuing with fresh evidence")
+            }
+        }
+        while true {
+            try Task.checkCancellation()
+            _ = try await autoRefocusIfDue()
+            do {
+                try io.checkSafety()
+                // Let the user's focus click/keyboard shortcut settle before input resumes.
+                try await Task.sleep(nanoseconds: 250_000_000)
+                try await io.prepareToResumeAfterFocus()
+                try Task.checkCancellation()
+                ready = true
+                return
+            } catch WorkflowFailure.focusUnavailable {
+                try await Task.sleep(nanoseconds: 150_000_000)
+            }
+        }
+    }
+
+    private func gate() async throws {
+        while true {
+            try Task.checkCancellation()
+            _ = try await autoRefocusIfDue()
+            if paused {
+                try await Task.sleep(nanoseconds: 100_000_000)
+                continue
+            }
+            guard let io else { throw CancellationError() }
+            do { try io.checkSafety() }
+            catch WorkflowFailure.focusUnavailable(let reason) {
+                try await waitForFocus(reason)
+                continue
+            }
+            guard macroUsesOwnLimit || activeTime() < deadline else {
+                throw WorkflowFailure.timeout("Maximum workflow duration reached")
+            }
+            return
+        }
+    }
+
+    @discardableResult
+    private func autoRefocusIfDue() async throws -> Bool {
+        guard settings.autoRefocus.enabled,
+              Date().timeIntervalSince(refocusTimerStarted) >= settings.autoRefocus.delaySeconds,
+              let io else { return false }
+        refocusTimerStarted = Date()
+        defer { refocusTimerStarted = Date() }
+        let revision = suspensionRevision
+        do {
+            try await io.refocusSelectedWindow()
+            try Task.checkCancellation()
+            // A new manual Pause during activation gets its own full interval.
+            let canResumePause = revision == suspensionRevision
+            suspensionRevision += 1
+            if paused && canResumePause { paused = false; updateSuspensionClock() }
+            transition(paused ? .paused : (isWaitingForFocus ? .waitingForFocus : (stage == .paused ? resumeStage : stage)),
+                       paused ? "Auto-refocus restored the selected window; a newer manual Pause remains active"
+                              : "Auto-refocus timer restored the selected game window; continuing the active session")
+            return true
+        } catch WorkflowFailure.focusUnavailable(let reason) {
+            transition(stage, "Auto-refocus could not restore game input yet: \(reason). Will try again after the configured interval.")
+            return false
+        }
     }
 
     private func observe() async throws -> Observation {
-        try await gate()
-        guard let io else { throw CancellationError() }
-        let value = try await io.observe()
-        try await gate()
-        guard abs(value.timestamp.timeIntervalSinceNow) < 2 else { throw WorkflowFailure.unsafe("Stale screenshot") }
-        lastObservation = value; onChange?()
-        if [.disconnected, .loginScreen, .characterSelection].contains(value.state) {
-            throw WorkflowFailure.unsafe("\(value.state.rawValue): manual intervention required")
+        while true {
+            try await gate()
+            guard let io else { throw CancellationError() }
+            let revision = suspensionRevision
+            let value: Observation
+            do { value = try await io.observe() }
+            catch WorkflowFailure.focusUnavailable(let reason) {
+                try await waitForFocus(reason)
+                continue
+            }
+            try await gate()
+            // A captured frame must not survive an intervening background/manual pause.
+            guard revision == suspensionRevision else { continue }
+            guard abs(value.timestamp.timeIntervalSinceNow) < 2 else { throw WorkflowFailure.unsafe("Stale screenshot") }
+            lastObservation = value; onChange?()
+            if [.disconnected, .loginScreen, .characterSelection].contains(value.state) {
+                throw WorkflowFailure.unsafe("\(value.state.rawValue): manual intervention required")
+            }
+            return value
         }
-        return value
+    }
+
+    private func sessionDelay(_ seconds: Double) async throws {
+        let until = activeTime() + seconds
+        while true {
+            try await gate()
+            let remaining = until - activeTime()
+            guard remaining > 0 else { return }
+            try await Task.sleep(nanoseconds: UInt64(min(remaining, 0.1) * 1_000_000_000))
+        }
     }
 
     private func wait(_ label: String, timeout: Double? = nil, requiredVisible: TargetRole? = nil,
                       target: TargetRole? = nil,
                       inputPrecondition: Bool = false,
                       condition: (Observation) -> Bool) async throws -> Observation {
-        let until = Date().addingTimeInterval(timeout ?? settings.actionTimeoutSeconds)
+        let until = activeTime() + (timeout ?? settings.actionTimeoutSeconds)
         var attempt = 0
-        while Date() < until {
+        while true {
+            try await gate()
+            guard activeTime() < until else { break }
             let frame = try await observe()
             if inputPrecondition && !frame.permitsInput(strictGameplayRecognition: config.strictGameplayRecognition) {
                 throw WorkflowFailure.unsafe("Input blocked by detected interruption state: \(frame.state.rawValue)")
@@ -142,7 +246,7 @@ public final class AutomationCoordinator {
             if attempt <= settings.detectionRetries + 1 {
                 transition(stage, "Detection poll \(attempt): waiting for \(label), state \(frame.state.rawValue)")
             }
-            try await Task.sleep(nanoseconds: UInt64(settings.pollSeconds * 1_000_000_000))
+            try await sessionDelay(settings.pollSeconds)
         }
         let detail: String
         if let target {
@@ -154,34 +258,48 @@ public final class AutomationCoordinator {
 
     @discardableResult
     private func action(_ action: GameAction, requiring role: TargetRole) async throws -> Observation {
-        var frame = try await observe()
-        guard frame.permitsInput(strictGameplayRecognition: config.strictGameplayRecognition) else {
-            throw WorkflowFailure.unsafe("Input blocked by detected interruption state: \(frame.state.rawValue)")
-        }
-        if !config.strictGameplayRecognition, role != .normalGameplay, !frame.has(role) {
-            frame = try await wait("\(role.rawValue) before action", inputPrecondition: true) { $0.has(role) }
-        }
-        guard (role == .normalGameplay && !config.strictGameplayRecognition) || frame.has(role) else {
-            throw WorkflowFailure.unsafe("Missing precondition target: \(role.rawValue)")
-        }
-        if case let .click(target) = action {
-            let savedPosition = !config.strictGameplayRecognition && io?.hasCalibratedTarget(target) == true
-            guard target != .withdrawExcluded, frame.has(target) || savedPosition else {
-                throw WorkflowFailure.unsafe("Click target is missing or unrecognized: \(target.rawValue)")
+        while true {
+            var frame = try await observe()
+            guard frame.permitsInput(strictGameplayRecognition: config.strictGameplayRecognition) else {
+                throw WorkflowFailure.unsafe("Input blocked by detected interruption state: \(frame.state.rawValue)")
             }
-            if target == .transferButton && ((settings.bankingVerification == .newSuccessIndicator && frame.has(.transferSuccess)) || frame.has(.processingIndicator)) {
-                throw WorkflowFailure.uncertain("Transfer precondition changed; existing success or processing evidence")
+            if !config.strictGameplayRecognition, role != .normalGameplay, !frame.has(role) {
+                frame = try await wait("\(role.rawValue) before action", inputPrecondition: true) { $0.has(role) }
             }
-            if target == .transferButton, settings.bankingVerification != .newSuccessIndicator,
-               BankingVerifier.count(in: frame, mode: settings.bankingVerification, format: settings.countFormat) == nil {
-                throw WorkflowFailure.uncertain("Fresh before-transfer count is unreadable")
+            guard (role == .normalGameplay && !config.strictGameplayRecognition) || frame.has(role) else {
+                throw WorkflowFailure.unsafe("Missing precondition target: \(role.rawValue)")
+            }
+            if case let .click(target) = action {
+                let savedPosition = !config.strictGameplayRecognition && io?.hasCalibratedTarget(target) == true
+                guard target != .withdrawExcluded, frame.has(target) || savedPosition else {
+                    throw WorkflowFailure.unsafe("Click target is missing or unrecognized: \(target.rawValue)")
+                }
+                if target == .transferButton && ((settings.bankingVerification == .newSuccessIndicator && frame.has(.transferSuccess)) || frame.has(.processingIndicator)) {
+                    throw WorkflowFailure.uncertain("Transfer precondition changed; existing success or processing evidence")
+                }
+                if target == .transferButton, settings.bankingVerification != .newSuccessIndicator,
+                   BankingVerifier.count(in: frame, mode: settings.bankingVerification, format: settings.countFormat) == nil {
+                    throw WorkflowFailure.uncertain("Fresh before-transfer count is unreadable")
+                }
+            }
+            let revision = suspensionRevision
+            try await gate()
+            guard revision == suspensionRevision else { continue }
+            guard let io else { throw CancellationError() }
+            do {
+                try await io.perform(action)
+                refocusTimerStarted = Date()
+                transition(stage, "Delivered \(io.describeAction(action)); result pending visual verification")
+                return frame
+            } catch WorkflowFailure.focusUnavailable(let reason) {
+                try await waitForFocus(reason)
+            } catch WorkflowFailure.focusLostAfterInput(let reason) {
+                refocusTimerStarted = Date()
+                transition(stage, "Input was delivered and released during focus loss; it will not be repeated")
+                try await waitForFocus(reason)
+                return frame
             }
         }
-        try await gate()
-        guard let io else { throw CancellationError() }
-        try await io.perform(action)
-        transition(stage, "Delivered \(io.describeAction(action)); result pending visual verification")
-        return frame
     }
 
     private func run() async throws {
@@ -191,7 +309,7 @@ public final class AutomationCoordinator {
         if config.helperEnabled { try await helper() }
         transition(.farming, "Monitoring configured farming indicators")
         var recoveries = 0
-        var lastBank = Date()
+        var lastBank = activeTime()
         var skillsCompleted = false
         while true {
             let frame = try await observe()
@@ -208,8 +326,8 @@ public final class AutomationCoordinator {
                     throw WorkflowFailure.uncertain("Unknown or unexpected farming state: \(frame.state.rawValue)")
                 }
                 if settings.inventoryMonitoringEnabled && settings.bankingEnabled && frame.has(.bankingTrigger)
-                    && Date().timeIntervalSince(lastBank) >= settings.bankingCooldownSeconds {
-                    try await bank(); lastBank = Date()
+                    && (activeTime() - lastBank) >= settings.bankingCooldownSeconds {
+                    try await bank(); lastBank = activeTime()
                     if config.helperEnabled { try await helper() }
                 }
                 if config.skillsEnabled && (!skillsCompleted || settings.repeatSkills) {
@@ -217,7 +335,7 @@ public final class AutomationCoordinator {
                 }
             }
             transition(.farming, "Monitoring: \(lastObservation?.state.rawValue ?? "unknown")")
-            try await Task.sleep(nanoseconds: UInt64(settings.pollSeconds * 1_000_000_000))
+            try await sessionDelay(settings.pollSeconds)
         }
     }
 
@@ -228,12 +346,11 @@ public final class AutomationCoordinator {
             }
             let repetition = settings.macroRepeat
             let activeStart = activeTime()
-            let wallStart = Date()
             macroUsesOwnLimit = repetition.mode != .once
             defer {
                 // Explicit macro count/hours owns this phase's limit. Other
                 // workflow modules keep their remaining session time afterward.
-                if macroUsesOwnLimit { deadline.addTimeInterval(Date().timeIntervalSince(wallStart)) }
+                if macroUsesOwnLimit { deadline += activeTime() - activeStart }
                 macroUsesOwnLimit = false
             }
             macroRunsCompleted = 0
@@ -306,15 +423,15 @@ public final class AutomationCoordinator {
 
     private func rotateSkills() async throws {
         for skill in settings.skills {
-            if let last = skillTimes[skill.id], Date().timeIntervalSince(last) < skill.cooldownSeconds { continue }
+            if let last = skillTimes[skill.id], (activeTime() - last) < skill.cooldownSeconds { continue }
             let frame = try await observe()
             guard [.normalGameplay, .helperRunning].contains(frame.state)
                 || (!config.strictGameplayRecognition && frame.state == .unknown
                     && frame.permitsInput(strictGameplayRecognition: false)) else { return }
             try await action(.key(skill.keyCode), requiring: .normalGameplay)
-            skillTimes[skill.id] = Date()
+            skillTimes[skill.id] = activeTime()
             if let target = skill.verification { _ = try await wait("skill evidence") { $0.has(target) } }
-            try await Task.sleep(nanoseconds: UInt64(skill.delaySeconds * 1_000_000_000))
+            try await sessionDelay(skill.delaySeconds)
         }
     }
 
@@ -323,7 +440,7 @@ public final class AutomationCoordinator {
         if initial.state == .possibleDeath {
             var previous = initial.timestamp
             for _ in 0..<2 {
-                try await Task.sleep(nanoseconds: UInt64(settings.pollSeconds * 1_000_000_000))
+                try await sessionDelay(settings.pollSeconds)
                 let frame = try await observe()
                 guard frame.timestamp > previous, frame.has(.deathIndicator), frame.has(.deathConfirmation) else {
                     throw WorkflowFailure.uncertain("Death evidence did not remain confirmed")
@@ -333,7 +450,7 @@ public final class AutomationCoordinator {
         }
         transition(.waitingForRespawn, "Waiting for stable respawn evidence")
         _ = try await wait("respawn", timeout: settings.recoveryTimeoutSeconds) { $0.has(.respawnIndicator) && !$0.has(.deathIndicator) }
-        try await Task.sleep(nanoseconds: UInt64(settings.pollSeconds * 1_000_000_000))
+        try await sessionDelay(settings.pollSeconds)
         let stableRespawn = try await observe()
         guard stableRespawn.has(.respawnIndicator), !stableRespawn.has(.deathIndicator) else {
             throw WorkflowFailure.uncertain("Respawn was not stable across fresh captures")
@@ -346,9 +463,9 @@ public final class AutomationCoordinator {
         guard (!requireValidated || settings.route.validated), settings.route.hasActions else {
             throw WorkflowFailure.prerequisite("Recovery route is empty or has not passed replay validation")
         }
-        let routeDeadline = Date().addingTimeInterval(settings.routeTimeoutSeconds)
+        let routeDeadline = activeTime() + settings.routeTimeoutSeconds
         func remaining() throws -> Double {
-            let seconds = routeDeadline.timeIntervalSinceNow
+            let seconds = routeDeadline - activeTime()
             guard seconds > 0 else { throw WorkflowFailure.timeout("Maximum route duration reached") }
             return min(seconds, settings.actionTimeoutSeconds)
         }
@@ -366,9 +483,7 @@ public final class AutomationCoordinator {
                        && frame.permitsInput(strictGameplayRecognition: false))) else {
                 throw WorkflowFailure.unsafe("Route checkpoint lost or unsafe route state")
             }
-            try await gate()
-            guard let io else { throw CancellationError() }
-            try await io.perform(step.action)
+            try await deliverInput(step.action, allowRespawn: true, requiring: step.before, routeDeadline: routeDeadline)
             _ = try await wait("route checkpoint \(step.after.rawValue)", timeout: remaining()) { $0.has(step.after) }
         }
         transition(.verifyingLocation, "Verifying destination and gameplay")
@@ -378,11 +493,11 @@ public final class AutomationCoordinator {
         }
     }
 
-    private func playback(_ recording: InputRecording, allowRespawn: Bool, deadline playbackDeadline: Date? = nil) async throws {
+    private func playback(_ recording: InputRecording, allowRespawn: Bool, deadline playbackDeadline: Double? = nil) async throws {
         try recording.validate()
         guard !recording.steps.isEmpty else { throw WorkflowFailure.prerequisite("Input recording is empty") }
         func checkDeadline() throws {
-            if let playbackDeadline, Date() >= playbackDeadline { throw WorkflowFailure.timeout("Maximum route duration reached") }
+            if let playbackDeadline, activeTime() >= playbackDeadline { throw WorkflowFailure.timeout("Maximum route duration reached") }
         }
         func checkFrame() async throws {
             try checkDeadline()
@@ -393,29 +508,61 @@ public final class AutomationCoordinator {
         }
         for (index, step) in recording.steps.enumerated() {
             try await recordedDelay(step.delayBeforeSeconds, allowRespawn: allowRespawn, routeDeadline: playbackDeadline)
-            try await checkFrame()
-            try await gate(); try checkDeadline()
-            guard let io else { throw CancellationError() }
-            try await io.performRecorded(step)
-            transition(stage, "Replayed input \(index + 1)/\(recording.steps.count): \(io.describeAction(step.action))")
+            try await deliverInput(step.action, recorded: step, allowRespawn: allowRespawn, routeDeadline: playbackDeadline)
+            transition(stage, "Replayed input \(index + 1)/\(recording.steps.count): \(io?.describeAction(step.action) ?? String(describing: step.action))")
         }
         try await recordedDelay(recording.tailDelaySeconds, allowRespawn: allowRespawn, routeDeadline: playbackDeadline)
         try await checkFrame()
     }
 
-    private func activeTime() -> Double {
-        Date().timeIntervalSinceReferenceDate - pausedSeconds
-            - (pauseStarted.map { Date().timeIntervalSince($0) } ?? 0)
+    private func deliverInput(_ action: GameAction, recorded: RecordedInputStep? = nil,
+                              allowRespawn: Bool, requiring role: TargetRole? = nil,
+                              routeDeadline: Double? = nil) async throws {
+        while true {
+            let frame = try await observe()
+            let revision = suspensionRevision
+            guard frame.permitsInput(strictGameplayRecognition: config.strictGameplayRecognition, allowRespawn: allowRespawn) else {
+                throw WorkflowFailure.unsafe("Input blocked by \(frame.state.rawValue)")
+            }
+            if let role {
+                guard frame.has(role), [.normalGameplay, .helperRunning, .warpWindowOpen, .respawnScreen].contains(frame.state)
+                    || (!config.strictGameplayRecognition && frame.state == .unknown) else {
+                    throw WorkflowFailure.unsafe("Route checkpoint lost or unsafe route state")
+                }
+            }
+            try await gate()
+            guard revision == suspensionRevision else { continue }
+            if let routeDeadline, activeTime() >= routeDeadline { throw WorkflowFailure.timeout("Maximum route duration reached") }
+            guard let io else { throw CancellationError() }
+            do {
+                if let recorded { try await io.performRecorded(recorded) }
+                else { try await io.perform(action) }
+                refocusTimerStarted = Date()
+                return
+            } catch WorkflowFailure.focusUnavailable(let reason) {
+                try await waitForFocus(reason)
+            } catch WorkflowFailure.focusLostAfterInput(let reason) {
+                refocusTimerStarted = Date()
+                transition(stage, "Input was delivered and released during focus loss; continuing at the next input after focus returns")
+                try await waitForFocus(reason)
+                return
+            }
+        }
     }
 
-    private func recordedDelay(_ seconds: Double, allowRespawn: Bool, routeDeadline: Date? = nil,
+    private func activeTime() -> Double {
+        Date().timeIntervalSinceReferenceDate - suspendedSeconds
+            - (suspensionStarted.map { Date().timeIntervalSince($0) } ?? 0)
+    }
+
+    private func recordedDelay(_ seconds: Double, allowRespawn: Bool, routeDeadline: Double? = nil,
                                stopAtActiveTime: Double? = nil) async throws {
         var remaining = seconds
         while remaining > 0 {
             try await gate()
             let start = activeTime()
             if let stopAtActiveTime, start >= stopAtActiveTime { return }
-            if let routeDeadline, Date() >= routeDeadline { throw WorkflowFailure.timeout("Maximum route duration reached") }
+            if let routeDeadline, activeTime() >= routeDeadline { throw WorkflowFailure.timeout("Maximum route duration reached") }
             let frame = try await observe()
             guard frame.permitsInput(strictGameplayRecognition: config.strictGameplayRecognition, allowRespawn: allowRespawn) else {
                 throw WorkflowFailure.unsafe("Recorded playback stopped by \(frame.state.rawValue)")

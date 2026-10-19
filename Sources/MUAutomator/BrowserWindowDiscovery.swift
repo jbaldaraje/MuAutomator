@@ -33,7 +33,7 @@ struct BrowserWindowBinding: @unchecked Sendable {
 
     func requireFocusedWindow(_ focused: AXUIElement) throws {
         guard CFEqual(windowElement, focused) else {
-            throw WorkflowFailure.unsafe("Another browser window has focus. Focus selected game window \(windowID), then start/resume again.")
+            throw WorkflowFailure.focusUnavailable("Another browser window has focus. Return to selected game window \(windowID) to continue.")
         }
     }
 
@@ -164,7 +164,7 @@ enum BrowserWindowDiscovery {
         let app = AXUIElementCreateApplication(binding.processID)
         guard let value = read(app, kAXFocusedWindowAttribute as CFString),
               CFGetTypeID(value) == AXUIElementGetTypeID() else {
-            throw WorkflowFailure.unsafe("Cannot verify focused browser window")
+            throw WorkflowFailure.focusUnavailable("Waiting for the selected browser window to regain focus")
         }
         let focused = value as! AXUIElement
         try binding.requireFocusedWindow(focused)
