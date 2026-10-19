@@ -85,6 +85,16 @@ enum VisionService {
                 columns: profile.inventoryColumns ?? 8, rows: profile.inventoryRows ?? 8,
                 jewel: profile.targets.first(where: { $0.role == .jewelSample })?.template)
         }
-        return Observation(timestamp: timestamp, matches: matches, text: texts, inventory: inventory, scores: scores)
+        var namedBalances: [UUID: NamedBankBalanceSample] = [:]
+        for target in profile.namedBankBalances {
+            let candidates: [OCRTextCandidate]
+            if matches[.bankTitle] != nil, let cropped = crop(image, region: target.region) { candidates = try recognize(cropped) }
+            else { candidates = [] }
+            namedBalances[target.id] = NamedBankBalanceSample(target: target,
+                text: candidates.map(\.text).joined(separator: " "),
+                confidence: candidates.map(\.confidence).min() ?? 0)
+        }
+        return Observation(timestamp: timestamp, matches: matches, text: texts, inventory: inventory,
+                           scores: scores, namedBankBalances: namedBalances)
     }
 }

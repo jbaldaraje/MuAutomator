@@ -83,4 +83,28 @@ final class BankingVerifierTests: XCTestCase {
         XCTAssertNil(tracker.reading)
     }
 
+    func testNamedJewelsTrackIndependentChangesAndRejectOneUncertainRow() throws {
+        let region = try NormalizedRegion(x: 0, y: 0, width: 0.1, height: 0.1)
+        let a = NamedBankBalanceTarget(name: "Jewel A", region: region, format: .commaGrouped)
+        let b = NamedBankBalanceTarget(name: "Jewel B", region: region)
+        let c = NamedBankBalanceTarget(name: "Jewel C", region: region)
+        var tracker = NamedBankBalanceTracker()
+        for (index, values) in [["1,000", "30"], ["1,000", "30"], ["1,025", "40"], ["1,025", "40"]].enumerated() {
+            let frame = Observation(timestamp: Date().addingTimeInterval(-0.8 + Double(index) * 0.2),
+                                    matches: [.bankTitle: 1], namedBankBalances: [
+                a.id: .init(target: a, text: values[0], confidence: 1),
+                b.id: .init(target: b, text: values[1], confidence: 1),
+                c.id: .init(target: c, text: "900", confidence: 0.4)
+            ])
+            tracker.observe(frame)
+        }
+        XCTAssertEqual(tracker.readings[a.id]?.reading.balance, 1025)
+        XCTAssertEqual(tracker.readings[a.id]?.reading.added, 25)
+        XCTAssertEqual(tracker.readings[b.id]?.reading.balance, 40)
+        XCTAssertEqual(tracker.readings[b.id]?.reading.added, 10)
+        XCTAssertNil(tracker.readings[c.id])
+        XCTAssertNil(NamedBankBalanceSample(target: a, text: "1,02", confidence: 1).count)
+        XCTAssertNil(NamedBankBalanceSample(target: a, text: "1025", confidence: .nan).count)
+    }
+
 }

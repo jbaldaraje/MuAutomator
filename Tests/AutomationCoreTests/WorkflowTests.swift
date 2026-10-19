@@ -17,6 +17,7 @@ private final class FakeIO: WorkflowIO {
     var onObservation: (() -> Void)?
     var texts: [TargetRole: String] = [:]
     var scores: [TargetRole: Double] = [:]
+    var namedBalances: [UUID: NamedBankBalanceSample] = [:]
     var recordedSteps: [RecordedInputStep] = []
     var configuredTargets: Set<TargetRole> = []
     var onAction: ((GameAction) -> Void)?
@@ -29,7 +30,7 @@ private final class FakeIO: WorkflowIO {
         try checkSafety()
         let roles = frames.count > 1 ? frames.removeFirst() : (frames.first ?? [])
         observationCount += 1
-        let value = Observation(matches: Dictionary(uniqueKeysWithValues: roles.map { ($0, 0.99) }), text: texts, scores: scores)
+        let value = Observation(matches: Dictionary(uniqueKeysWithValues: roles.map { ($0, 0.99) }), text: texts, scores: scores, namedBankBalances: namedBalances)
         onObservation?()
         return value
     }
@@ -1248,6 +1249,41 @@ final class WorkflowTests: XCTestCase {
         XCTAssertEqual(runner.stage, .waitingForManualIntervention)
         XCTAssertNil(runner.bankBalanceReading)
         XCTAssertTrue(runner.bankBalanceStatus.contains("interrupted"))
+    }
+
+    @MainActor func testMultipleJewelCollectionsKeepIndependentBaselinesAndPartialFailures() async throws {
+        let region = try NormalizedRegion(x: 0, y: 0, width: 0.1, height: 0.1)
+        let a = NamedBankBalanceTarget(name: "Jewel A", region: region)
+        let b = NamedBankBalanceTarget(name: "Jewel B", region: region)
+        let io = FakeIO(); io.frames = [[.bankTitle]]
+        io.namedBalances = [a.id: .init(target: a, text: "100", confidence: 1),
+                            b.id: .init(target: b, text: "20", confidence: 1)]
+        io.onAction = { _ in
+            io.namedBalances = [a.id: .init(target: a, text: "125", confidence: 1),
+                                b.id: .init(target: b, text: "30", confidence: 1)]
+        }
+        var config = AutomationConfiguration(); config.dryRun = false
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput
+        var macro = recording([.key(12)])
+        macro.steps[0].delayBeforeSeconds = 0.05; macro.tailDelaySeconds = 0.05
+        settings.bankingRecording = macro; settings.pollSeconds = 0.01
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await finish(runner)
+        XCTAssertEqual(runner.namedBankBalanceReadings[a.id]?.reading.added, 25)
+        XCTAssertEqual(runner.namedBankBalanceReadings[b.id]?.reading.added, 10)
+        let previousB = runner.namedBankBalanceReadings[b.id]?.reading
+        XCTAssertEqual(runner.updatedBankBalanceIDs, [a.id, b.id])
+        io.namedBalances = [a.id: .init(target: a, text: "500", confidence: 1),
+                            b.id: .init(target: b, text: "30", confidence: 0.1)]
+        io.onAction = { _ in io.namedBalances[a.id] = .init(target: a, text: "505", confidence: 1) }
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await finish(runner)
+        XCTAssertEqual(runner.namedBankBalanceReadings[a.id]?.reading.balance, 505)
+        XCTAssertEqual(runner.namedBankBalanceReadings[a.id]?.reading.added, 5)
+        XCTAssertEqual(runner.namedBankBalanceReadings[b.id]?.reading, previousB)
+        XCTAssertEqual(runner.updatedBankBalanceIDs, [a.id])
+        XCTAssertTrue(runner.events.contains { $0.message == "Jewel A bank balance: 505; amount added: +5" })
     }
 
 }

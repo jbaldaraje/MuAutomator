@@ -69,6 +69,34 @@ final class VisionAdapterTests: XCTestCase {
         XCTAssertThrowsError(try MacWorkflowIO.requireTargets([.inventoryControl], in: profile, strictGameplayRecognition: true))
     }
 
+    @MainActor func testNamedJewelNumberRegionsProduceIndependentLiveOCRSamples() throws {
+        let canvas = NSImage(size: NSSize(width: 1000, height: 160))
+        canvas.lockFocus()
+        NSColor.white.setFill()
+        NSBezierPath(rect: NSRect(x: 0, y: 0, width: 1000, height: 160)).fill()
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.boldSystemFont(ofSize: 48),
+                                                       .foregroundColor: NSColor.black]
+        ("1000" as NSString).draw(at: NSPoint(x: 20, y: 50), withAttributes: attributes)
+        ("2500" as NSString).draw(at: NSPoint(x: 520, y: 50), withAttributes: attributes)
+        canvas.unlockFocus()
+        let frame = try XCTUnwrap(canvas.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        let left = try AutomationCore.NormalizedRegion(x: 0, y: 0, width: 0.5, height: 1)
+        let right = try AutomationCore.NormalizedRegion(x: 0.5, y: 0, width: 0.5, height: 1)
+        var profile = CalibrationProfile()
+        // Reuse the left text as this synthetic frame's bank-presence evidence.
+        profile.targets = [.init(role: .bankTitle, region: left, expectedText: "1000", threshold: 0.8)]
+        let soul = NamedBankBalanceTarget(name: "Jewel of Soul", region: left, threshold: 0.8)
+        let creation = NamedBankBalanceTarget(name: "Jewel of Creation", region: right, threshold: 0.8)
+        profile.namedBankBalances = [soul, creation]
+        let result = try VisionService.detect(image: frame, profile: profile, timestamp: Date(),
+                                             strictRecognition: false, includeOCRDiagnostics: false)
+        XCTAssertEqual(result.namedBankBalances[soul.id]?.count, 1000)
+        XCTAssertEqual(result.namedBankBalances[creation.id]?.count, 2500)
+        profile.targets = []
+        let closed = try VisionService.detect(image: frame, profile: profile, timestamp: Date())
+        XCTAssertNil(closed.namedBankBalances[soul.id]?.count, "Numbers outside a recognized bank must not update balances")
+    }
+
     private func image(_ name: String) throws -> CGImage {
         let url = try XCTUnwrap(Bundle.module.url(forResource: name, withExtension: "png", subdirectory: "Fixtures"))
         let image = try XCTUnwrap(NSImage(contentsOf: url))

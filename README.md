@@ -47,13 +47,19 @@ For recovery later, record **Return to spot** starting from spawn. In Calibratio
 
 Pause blocks subsequent recorded input and freezes pending playback waits; Stop cancels pending input and releases an injected held key/button. Configured interruption labels are checked between inputs and during playback waits. Timing is subject to capture and OS dispatch latency; recording is positional playback, not automatic button recognition or pathfinding. The optional banking-trigger monitor can start another recorded cycle in full mode, so disable it while testing a single recording.
 
-## Dashboard bank balance
+## Dashboard bank balances
 
-Dashboard shows the latest confirmed numeric bank balance, observed amount added in that collection, and reading time. Each successfully completed banking workflow or recorded macro cycle starts a fresh baseline; it never calculates a deposit from a previous session's balance. Successful readings are also written to Activity for export. Values stay in memory for the current app session.
+Dashboard supports separate balances for **Jewel of Soul**, **Jewel of Creation**, **Jewel of Socket**, and **Jewel of Rare**, plus custom jewel names. Each row shows its balance, observed amount added during that collection, and reading time. Values stay in memory for the current app session; successful readings also appear in Activity for export.
 
-In Calibration, label `bankTitle` on the open bank and `bankBalanceText` around exactly one number (exclude text labels and currency symbols). Choose **Workflows → Numeric format** for digits, comma grouping or space grouping. Use Detect only to check OCR against the real game. Tracking works with either image workflows or recorded inputs and does not change their existing verification rules.
+1. Open the bank in the game. In Calibration, capture a snapshot (freeze Live preview first) and mark `bankTitle` on its fixed header as usual.
+2. Under **Named jewel balances**, click **Jewel of Soul**. Choose **Jewel number format** for digits (`1234`), comma grouping (`1,234`), or space grouping (`1 234`). Draw around only Soul's number, excluding its name/icon and other numbers.
+3. Repeat for **Jewel of Creation**, **Jewel of Socket**, and **Jewel of Rare**. Names are editable; each saved name gets its own region, number format and OCR threshold. The same name updates its existing region when redrawn. Regions must not overlap. **Edit** loads a saved row's settings; redraw to apply changes. **Remove** deletes that row from the profile.
+4. Turn off **Mark a named jewel balance** when returning to ordinary target calibration. Click **Save as startup default**, capture a fresh snapshot, then **Detect only**. Check each jewel's OCR number against the game.
+5. For recorded inputs, leave the bank visible briefly before depositing and after processing finishes, before closing it. Allow at least two OCR observations at each end. Run a collection and check each Dashboard row.
 
-For recorded inputs, leave the bank visible briefly before the deposit and after processing finishes; allow at least two OCR observations at each end. Two fresh, consecutive, confident reads must agree. A positive difference is displayed as the observed amount added, not independent transfer proof. An unchanged number shows **Not confirmed** for amount added. Missing, malformed, low-confidence or unsettled readings and interrupted cycles retain the previous reading with its original timestamp and an explanation. No extra clicks, automatic retries or bank reopening are introduced. Exact OCR regions still need calibration on your Mac; Linux tests exercise the tracking logic, not Apple Vision accuracy against your game screen.
+Each jewel uses its own baseline within that collection. Two fresh, consecutive, confident reads must agree. A positive difference is the observed amount added, not independent deposit proof. An unchanged number shows **Not confirmed** for amount added. An unreadable row keeps its previous value and timestamp with **Previous reading**, while readable rows still update. Interrupted collections publish no partial results. No extra clicks, retries or bank reopening are introduced.
+
+Existing single-balance profiles remain supported through `bankBalanceText` and **Workflows → Numeric format**. Named rows use their own formats. Named balances do not replace `bankBalanceText` if you selected `bankBalanceIncrease` as the image workflow's transfer-verification method; keep that verification target or use your existing valid alternative. Exact regions require calibration on your Mac. Linux tests validate the tracking logic, not Apple Vision accuracy against the real game.
 
 ## Calibration
 

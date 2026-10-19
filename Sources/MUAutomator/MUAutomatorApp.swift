@@ -172,7 +172,30 @@ struct DashboardView: View {
             VStack(alignment: .leading, spacing: 18) {
                 GroupBox("Bank balance") {
                     VStack(alignment: .leading, spacing: 10) {
-                        if let reading = model.runner.bankBalanceReading {
+                        if !capture.profile.namedBankBalances.isEmpty {
+                            Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 10) {
+                                GridRow {
+                                    Text("Jewel"); Text("Balance"); Text("Added"); Text("Read at")
+                                }.font(.caption).foregroundStyle(.secondary)
+                                ForEach(capture.profile.namedBankBalances) { target in
+                                    GridRow {
+                                        Text(target.name).fontWeight(.semibold)
+                                        if let value = model.runner.namedBankBalanceReadings[target.id] {
+                                            Text(value.reading.balance.formatted()).monospacedDigit()
+                                            Text(value.reading.added.map { "+" + $0.formatted() } ?? "Not confirmed").monospacedDigit()
+                                            VStack(alignment: .leading) {
+                                                Text(value.reading.timestamp.formatted(date: .abbreviated, time: .standard))
+                                                if !model.runner.updatedBankBalanceIDs.contains(target.id) {
+                                                    Text("Previous reading").foregroundStyle(.orange)
+                                                }
+                                            }.font(.caption)
+                                        } else {
+                                            Text("—"); Text("Not confirmed"); Text("No reading yet").font(.caption)
+                                        }
+                                    }
+                                }
+                            }
+                        } else if let reading = model.runner.bankBalanceReading {
                             HStack(spacing: 32) {
                                 VStack(alignment: .leading) {
                                     Text("Last confirmed balance").font(.caption).foregroundStyle(.secondary)
@@ -190,7 +213,7 @@ struct DashboardView: View {
                             Text("No confirmed balance yet").font(.headline)
                         }
                         Text(model.runner.bankBalanceStatus).font(.caption).textSelection(.enabled)
-                        Text("In Calibration, mark only the number as bankBalanceText and label bankTitle. Choose Numeric format in Workflows. Recorded workflows need a pause with the bank visible before and after the deposit. Readings are retained for this app session.")
+                        Text("In Calibration, label bankTitle and add a named number region for each jewel under Named jewel balances. Recorded workflows need a pause with the bank visible before and after the deposit. Readings are retained for this app session.")
                             .font(.caption).foregroundStyle(.secondary)
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
                 }

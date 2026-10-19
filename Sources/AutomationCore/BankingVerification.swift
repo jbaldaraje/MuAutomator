@@ -86,3 +86,48 @@ public struct BankBalanceTracker: Sendable {
         return BankBalanceReading(balance: latest.value, added: latest.value > baseline ? latest.value - baseline : nil, timestamp: latest.time)
     }
 }
+
+
+public struct NamedBankBalanceSample: Sendable {
+    public let name: String
+    public let text: String
+    public let count: Int64?
+    public let confidence: Double
+    public init(target: NamedBankBalanceTarget, text: String, confidence: Double) {
+        self.name = target.name; self.text = text; self.confidence = confidence
+        count = confidence.isFinite && confidence >= target.threshold && confidence <= 1
+            ? target.format.parse(text) : nil
+    }
+}
+
+public struct NamedBankBalanceReading: Sendable {
+    public let name: String
+    public let reading: BankBalanceReading
+}
+
+/// Each jewel keeps independent evidence and its own collection baseline.
+public struct NamedBankBalanceTracker: Sendable {
+    private var trackers: [UUID: BankBalanceTracker] = [:]
+    private var names: [UUID: String] = [:]
+    public init() {}
+    public mutating func observe(_ frame: Observation) {
+        for (id, sample) in frame.namedBankBalances {
+            if trackers[id] == nil { trackers[id] = BankBalanceTracker() }
+            names[id] = sample.name
+        }
+        for id in Array(trackers.keys) {
+            let count = frame.namedBankBalances[id]?.count
+            var matches = frame.matches
+            matches[.bankBalanceText] = count == nil ? 0 : 1
+            // Reuse the same freshness, processing and stable-read checks as the legacy balance.
+            let numeric = Observation(timestamp: frame.timestamp, matches: matches,
+                                      text: count.map { [.bankBalanceText: String($0)] } ?? [:])
+            trackers[id]?.observe(numeric, format: .digitsOnly)
+        }
+    }
+    public var readings: [UUID: NamedBankBalanceReading] {
+        trackers.compactMapValues { $0.reading }.reduce(into: [:]) { result, pair in
+            result[pair.key] = NamedBankBalanceReading(name: names[pair.key] ?? "Jewel", reading: pair.value)
+        }
+    }
+}

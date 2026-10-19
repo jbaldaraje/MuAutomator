@@ -28,7 +28,7 @@ struct WorkflowSettingsView: View {
                         Picker("Numeric format", selection: $model.settings.countFormat) {
                             ForEach(CountFormat.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                         }
-                        Text("Dashboard balances use bankTitle and bankBalanceText in either input mode. Keep the bank visible for at least two OCR reads before and after depositing. An unchanged number does not confirm an amount added.")
+                        Text("Set up each jewel under Calibration → Named jewel balances, with bankTitle marked. Named rows use their own number formats; Numeric format above is for legacy bankBalanceText and transfer verification. Keep the bank visible for two OCR reads before and after depositing.")
                             .font(.caption).foregroundStyle(.secondary)
                         Toggle("Monitor calibrated banking-trigger indicator (full mode)", isOn: $model.settings.inventoryMonitoringEnabled)
                         numeric("Minimum time between banking attempts (seconds)", value: $model.settings.bankingCooldownSeconds)

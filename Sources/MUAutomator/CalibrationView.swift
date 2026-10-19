@@ -7,6 +7,10 @@ struct CalibrationView: View {
     @ObservedObject var capture: CaptureModel
     let configuration: AutomationConfiguration
     let settings: WorkflowSettings
+    @State private var markingNamedBalance = false
+    @State private var jewelName = ""
+    @State private var jewelFormat: CountFormat = .digitsOnly
+    @State private var jewelThreshold = 0.95
 
     var body: some View {
         GroupBox("Window capture & visual calibration") {
@@ -56,6 +60,7 @@ struct CalibrationView: View {
                 }
                 calibrationPlan
                 if let image = capture.image {
+                    namedBalanceEditor
                     Picker("Target label", selection: $capture.role) {
                         ForEach(CalibrationTargetGroup.allCases, id: \.self) { group in
                             Section(group.rawValue) {
@@ -65,24 +70,34 @@ struct CalibrationView: View {
                                 }
                             }
                         }
-                    }.pickerStyle(.menu)
-                    targetDescription
-                    if capture.role.isNumericEvidence {
-                        Text("Numeric OCR reads this region automatically; keep only one count inside it.").font(.caption)
-                    } else {
+                    }.pickerStyle(.menu).disabled(markingNamedBalance)
+                    if !markingNamedBalance {
+                        targetDescription
+                        if capture.role.isNumericEvidence {
+                            Text("Numeric OCR reads this region automatically; keep only one count inside it.").font(.caption)
+                        } else {
+                            HStack {
+                                TextField("Optional OCR phrase for this target", text: $capture.expectedText)
+                                Button("Use image only") { capture.expectedText = "" }
+                                    .disabled(capture.expectedText.isEmpty)
+                            }
+                        }
                         HStack {
-                            TextField("Optional OCR phrase for this target", text: $capture.expectedText)
-                            Button("Use image only") { capture.expectedText = "" }
-                                .disabled(capture.expectedText.isEmpty)
+                            Text("Minimum similarity \(capture.threshold, specifier: "%.2f")")
+                            Slider(value: $capture.threshold, in: 0.8...1)
                         }
                     }
-                    HStack {
-                        Text("Minimum similarity \(capture.threshold, specifier: "%.2f")")
-                        Slider(value: $capture.threshold, in: 0.8...1)
-                    }
-                    Text("Edits update the selected target immediately. Save the profile to persist them; existing rectangles do not need redrawing.")
+                    Text(markingNamedBalance
+                         ? "Drawing now saves the named jewel above. Switch off Mark a named jewel balance to edit ordinary targets."
+                         : "Edits update the selected target immediately. Save the profile to persist them; existing rectangles do not need redrawing.")
                         .font(.caption).foregroundStyle(.secondary)
-                    RegionCanvas(image: image, targets: capture.profile.targets, selected: capture.role, mark: capture.mark)
+                    RegionCanvas(image: image, targets: capture.profile.targets, selected: capture.role,
+                                 namedBalances: capture.profile.namedBankBalances,
+                                 selectedName: markingNamedBalance ? jewelName : nil) { region in
+                        if markingNamedBalance {
+                            capture.markNamedBalance(region, name: jewelName, format: jewelFormat, threshold: jewelThreshold)
+                        } else { capture.mark(region) }
+                    }
                         .aspectRatio(CGFloat(image.width) / CGFloat(image.height), contentMode: .fit)
                         .disabled(capture.previewEnabled)
                     if capture.previewEnabled { Text("Freeze preview before marking regions or reviewing detection.").font(.caption) }
@@ -101,6 +116,12 @@ struct CalibrationView: View {
                     if let inventory = result.inventory {
                         Text("Inventory estimate: \(inventory.occupied)/\(inventory.total) occupied, \(inventory.uncertain) uncertain, \(inventory.jewelMatches) sample matches • confidence \(inventory.confidence, specifier: "%.2f")")
                             .font(.caption)
+                    }
+                    ForEach(capture.profile.namedBankBalances) { target in
+                        if let sample = result.namedBankBalances[target.id] {
+                            Text("\(target.name): \(sample.count.map { String($0) } ?? "unreadable") • OCR: \(sample.text) • confidence \(sample.confidence, specifier: "%.2f") / \(target.threshold, specifier: "%.2f")")
+                                .font(.caption.monospaced()).textSelection(.enabled)
+                        }
                     }
                     ForEach(capture.profile.targets) { target in
                         HStack {
@@ -127,6 +148,48 @@ struct CalibrationView: View {
             }.padding(8)
         }
         .onDisappear { capture.stopPreview() }
+    }
+
+    private var namedBalanceEditor: some View {
+        GroupBox("Named jewel balances") {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle("Mark a named jewel balance", isOn: $markingNamedBalance)
+                Text("Keep bankTitle calibrated. Enter the jewel name, choose its number format, then draw around only that jewel’s number. Repeat for each jewel. The same name updates its existing region.")
+                    .font(.caption)
+                Text("Choose a jewel, then draw around its balance:").font(.caption)
+                ForEach(NamedBankBalanceTarget.suggestedNames, id: \.self) { name in
+                    Button(name) {
+                        jewelName = name; markingNamedBalance = true
+                        if let target = capture.profile.namedBankBalances.first(where: { $0.name == name }) {
+                            jewelFormat = target.format; jewelThreshold = target.threshold
+                        }
+                    }
+                }
+                if markingNamedBalance {
+                    TextField("Jewel name", text: $jewelName)
+                    Picker("Jewel number format", selection: $jewelFormat) {
+                        ForEach(CountFormat.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    }
+                    HStack {
+                        Text("Jewel OCR confidence \(jewelThreshold, specifier: "%.2f")")
+                        Slider(value: $jewelThreshold, in: 0.8...1)
+                    }
+                    Text("Changing the name or options applies when you draw the rectangle. Save as startup default when finished.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                ForEach(capture.profile.namedBankBalances) { target in
+                    HStack {
+                        Button("Edit \(target.name)") {
+                            jewelName = target.name; jewelFormat = target.format
+                            jewelThreshold = target.threshold; markingNamedBalance = true
+                        }
+                        Text(target.format.rawValue).font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Remove", role: .destructive) { capture.removeNamedBalance(target.id) }
+                    }
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+        }
     }
 
     private var requiredRoles: Set<TargetRole> {
@@ -258,6 +321,8 @@ private struct RegionCanvas: View {
     let image: CGImage
     let targets: [CalibratedTarget]
     let selected: TargetRole
+    var namedBalances: [NamedBankBalanceTarget] = []
+    var selectedName: String? = nil
     let mark: (NormalizedRegion) -> Void
     @State private var drag: CGRect?
 
@@ -272,6 +337,15 @@ private struct RegionCanvas: View {
                         .frame(width: r.width * geometry.size.width, height: r.height * geometry.size.height)
                         .overlay(alignment: .topLeading) {
                             Text(target.role.rawValue).font(.caption2).background(.black.opacity(0.8)).foregroundStyle(.white)
+                        }
+                        .offset(x: r.x * geometry.size.width, y: r.y * geometry.size.height)
+                }
+                ForEach(namedBalances) { target in
+                    let r = target.region
+                    Rectangle().stroke(selectedName == target.name ? Color.yellow : Color.cyan, lineWidth: 2)
+                        .frame(width: r.width * geometry.size.width, height: r.height * geometry.size.height)
+                        .overlay(alignment: .topLeading) {
+                            Text(target.name).font(.caption2).background(.black.opacity(0.8)).foregroundStyle(.white)
                         }
                         .offset(x: r.x * geometry.size.width, y: r.y * geometry.size.height)
                 }

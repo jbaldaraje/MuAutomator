@@ -102,13 +102,42 @@ public struct CalibratedTarget: Codable, Identifiable, Sendable {
     }
 }
 
+/// A user-named balance has its own numeric crop; it does not replace bankBalanceText verification.
+public struct NamedBankBalanceTarget: Codable, Identifiable, Sendable {
+    public static let suggestedNames = ["Jewel of Soul", "Jewel of Creation", "Jewel of Socket", "Jewel of Rare"]
+    public var id: UUID
+    public var name: String
+    public var region: NormalizedRegion
+    public var format: CountFormat
+    public var threshold: Double
+    public init(id: UUID = UUID(), name: String, region: NormalizedRegion,
+                format: CountFormat = .digitsOnly, threshold: Double = 0.95) {
+        self.id = id; self.name = name; self.region = region
+        self.format = format; self.threshold = threshold
+    }
+}
+
 public struct CalibrationProfile: Codable, Sendable {
     public var schemaVersion = 1
     public var targets: [CalibratedTarget] = []
+    public var namedBankBalances: [NamedBankBalanceTarget] = []
     public var windowAspectRatio: Double?
     public var inventoryColumns: Int? = 8
     public var inventoryRows: Int? = 8
     public init() {}
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, targets, namedBankBalances, windowAspectRatio, inventoryColumns, inventoryRows
+    }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
+        targets = try values.decode([CalibratedTarget].self, forKey: .targets)
+        namedBankBalances = try values.decodeIfPresent([NamedBankBalanceTarget].self, forKey: .namedBankBalances) ?? []
+        windowAspectRatio = try values.decodeIfPresent(Double.self, forKey: .windowAspectRatio)
+        inventoryColumns = try values.decodeIfPresent(Int.self, forKey: .inventoryColumns)
+        inventoryRows = try values.decodeIfPresent(Int.self, forKey: .inventoryRows)
+    }
 
     public func validate() throws {
         guard schemaVersion == 1, Set(targets.map(\.role)).count == targets.count else {
@@ -118,6 +147,19 @@ public struct CalibrationProfile: Codable, Sendable {
             throw CalibrationError.invalidProfile
         }
         guard (1...16).contains(inventoryColumns ?? 8), (1...16).contains(inventoryRows ?? 8) else { throw CalibrationError.invalidProfile }
+        let names = namedBankBalances.map { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        guard namedBankBalances.count <= 32, Set(names).count == names.count,
+              names.allSatisfy({ !$0.isEmpty && $0.count <= 80 }),
+              Set(namedBankBalances.map(\.id)).count == namedBankBalances.count else {
+            throw CalibrationError.invalidProfile
+        }
+        for (index, balance) in namedBankBalances.enumerated() {
+            try balance.region.validate()
+            guard balance.threshold.isFinite, (0.8...1).contains(balance.threshold),
+                  !namedBankBalances.prefix(index).contains(where: { $0.region.overlaps(balance.region) }) else {
+                throw CalibrationError.invalidProfile
+            }
+        }
         for target in targets {
             try target.region.validate()
             try target.clickPoint?.validate()

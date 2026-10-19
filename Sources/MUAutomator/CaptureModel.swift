@@ -236,7 +236,7 @@ final class CaptureModel: ObservableObject {
     func mark(_ region: NormalizedRegion) {
         guard let image else { return }
         let ratio = Double(image.width) / Double(image.height)
-        if let old = profile.windowAspectRatio, abs(old - ratio) > 0.01, !profile.targets.isEmpty {
+        if let old = profile.windowAspectRatio, abs(old - ratio) > 0.01, !profile.targets.isEmpty || !profile.namedBankBalances.isEmpty {
             message = "Window aspect ratio changed. Clear the old calibration before marking new targets."
             return
         }
@@ -251,6 +251,36 @@ final class CaptureModel: ObservableObject {
                                     expectedText: expectedText.isEmpty ? nil : expectedText, threshold: threshold))
         invalidateDetection()
         message = "Created template for \(role.rawValue). Save, then test against a fresh screenshot."
+    }
+
+    func markNamedBalance(_ region: NormalizedRegion, name: String, format: CountFormat, threshold: Double) {
+        guard let image else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ratio = Double(image.width) / Double(image.height)
+        if let old = profile.windowAspectRatio, abs(old - ratio) > 0.01,
+           !profile.targets.isEmpty || !profile.namedBankBalances.isEmpty {
+            message = "Window aspect ratio changed. Use a profile matching this layout."
+            return
+        }
+        var updated = profile
+        updated.windowAspectRatio = ratio
+        let existing = updated.namedBankBalances.firstIndex { $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }
+        let target = NamedBankBalanceTarget(id: existing.map { updated.namedBankBalances[$0].id } ?? UUID(),
+                                           name: trimmed, region: region, format: format, threshold: threshold)
+        if let existing { updated.namedBankBalances[existing] = target }
+        else { updated.namedBankBalances.append(target) }
+        do {
+            try updated.validate()
+            profile = updated; invalidateDetection()
+            message = "Marked \(trimmed). Save as startup default, then Capture snapshot and Detect only."
+        } catch {
+            message = "Use a unique jewel name (1–80 characters), separate non-overlapping number regions, and at most 32 jewels."
+        }
+    }
+
+    func removeNamedBalance(_ id: UUID) {
+        profile.namedBankBalances.removeAll { $0.id == id }
+        invalidateDetection()
     }
 
     func setGrid(columns: Int, rows: Int) {

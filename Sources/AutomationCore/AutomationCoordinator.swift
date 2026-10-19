@@ -10,8 +10,11 @@ public final class AutomationCoordinator {
     public private(set) var lastVerifiedAction: String?
     public private(set) var macroRunsCompleted = 0
     public private(set) var bankBalanceReading: BankBalanceReading?
-    public private(set) var bankBalanceStatus = "Calibrate bankTitle and bankBalanceText to track collections."
+    public private(set) var bankBalanceStatus = "Calibrate bankTitle and each jewel’s number under Named jewel balances."
     private var balanceTracker: BankBalanceTracker?
+    public private(set) var namedBankBalanceReadings: [UUID: NamedBankBalanceReading] = [:]
+    public private(set) var updatedBankBalanceIDs: Set<UUID> = []
+    private var namedBalanceTracker: NamedBankBalanceTracker?
     public var onChange: (() -> Void)?
     private var task: Task<Void, Never>?
     private var paused = false
@@ -204,6 +207,7 @@ public final class AutomationCoordinator {
             guard revision == suspensionRevision else { continue }
             guard abs(value.timestamp.timeIntervalSinceNow) < 2 else { throw WorkflowFailure.unsafe("Stale screenshot") }
             balanceTracker?.observe(value, format: settings.countFormat)
+            namedBalanceTracker?.observe(value)
             lastObservation = value; onChange?()
             if [.disconnected, .loginScreen, .characterSelection].contains(value.state) {
                 throw WorkflowFailure.unsafe("\(value.state.rawValue): manual intervention required")
@@ -418,24 +422,38 @@ public final class AutomationCoordinator {
 
     private func beginBalanceCollection() {
         balanceTracker = BankBalanceTracker()
+        namedBalanceTracker = NamedBankBalanceTracker()
+        updatedBankBalanceIDs = []
         bankBalanceStatus = "Reading bank balance during collection…"
         onChange?()
     }
 
     private func finishBalanceCollection(completed: Bool) {
-        defer { balanceTracker = nil; onChange?() }
-        guard completed, let reading = balanceTracker?.reading else {
-            bankBalanceStatus = completed
-                ? "Couldn’t confirm this collection’s balance. Keep the bank open before and after depositing for two OCR reads. Check bankTitle, bankBalanceText and Numeric format."
-                : "Collection interrupted; previous balance retained."
+        defer { balanceTracker = nil; namedBalanceTracker = nil; onChange?() }
+        guard completed else {
+            bankBalanceStatus = "Collection interrupted; previous balances retained."
             return
         }
-        bankBalanceReading = reading
-        bankBalanceStatus = reading.added == nil
-            ? "Balance read, but the amount added could not be confirmed."
-            : "Balance change observed in this collection; OCR does not independently prove a deposit."
-        let amount = reading.added.map { "+\($0)" } ?? "not confirmed"
-        transition(stage, "Bank balance: \(reading.balance); amount added: \(amount)")
+        let named = namedBalanceTracker?.readings ?? [:]
+        for (id, value) in named {
+            namedBankBalanceReadings[id] = value
+            updatedBankBalanceIDs.insert(id)
+            let amount = value.reading.added.map { "+\($0)" } ?? "not confirmed"
+            transition(stage, "\(value.name) bank balance: \(value.reading.balance); amount added: \(amount)")
+        }
+        if let reading = balanceTracker?.reading {
+            bankBalanceReading = reading
+            bankBalanceStatus = reading.added == nil
+                ? "Balance read, but the amount added could not be confirmed."
+                : "Balance change observed in this collection; OCR does not independently prove a deposit."
+            let amount = reading.added.map { "+\($0)" } ?? "not confirmed"
+            transition(stage, "Bank balance: \(reading.balance); amount added: \(amount)")
+        } else {
+            bankBalanceStatus = "Couldn’t confirm this collection’s balance. Keep the bank open before and after depositing for two OCR reads. Check bankTitle, numeric regions and formats."
+        }
+        if !named.isEmpty {
+            bankBalanceStatus = "Updated \(named.count) jewel balances. Rows marked Previous reading were not refreshed. Amounts are observed increases, not independent deposit proof."
+        }
     }
 
     private func helper() async throws {

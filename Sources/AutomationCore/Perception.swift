@@ -48,10 +48,13 @@ public struct Observation: Sendable {
     public let text: [TargetRole: String]
     public let inventory: InventoryEstimate?
     public let scores: [TargetRole: Double]
+    public let namedBankBalances: [UUID: NamedBankBalanceSample]
     public init(timestamp: Date = Date(), matches: [TargetRole: Double], text: [TargetRole: String] = [:],
-                inventory: InventoryEstimate? = nil, scores: [TargetRole: Double] = [:]) {
+                inventory: InventoryEstimate? = nil, scores: [TargetRole: Double] = [:],
+                namedBankBalances: [UUID: NamedBankBalanceSample] = [:]) {
         self.timestamp = timestamp; self.matches = matches; self.text = text; self.inventory = inventory
         self.scores = scores
+        self.namedBankBalances = namedBankBalances
     }
     public func has(_ role: TargetRole) -> Bool {
         guard let score = matches[role] else { return false }
