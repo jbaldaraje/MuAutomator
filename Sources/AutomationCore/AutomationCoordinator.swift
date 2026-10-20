@@ -14,6 +14,7 @@ public final class AutomationCoordinator {
     private var balanceTracker: BankBalanceTracker?
     public private(set) var namedBankBalanceReadings: [UUID: NamedBankBalanceReading] = [:]
     public private(set) var updatedBankBalanceIDs: Set<UUID> = []
+    public private(set) var namedBankBalanceIssues: [UUID: String] = [:]
     private var namedBalanceTracker: NamedBankBalanceTracker?
     public var onChange: (() -> Void)?
     private var task: Task<Void, Never>?
@@ -424,6 +425,7 @@ public final class AutomationCoordinator {
         balanceTracker = BankBalanceTracker()
         namedBalanceTracker = NamedBankBalanceTracker()
         updatedBankBalanceIDs = []
+        namedBankBalanceIssues = [:]
         bankBalanceStatus = "Reading bank balance during collection…"
         onChange?()
     }
@@ -431,17 +433,24 @@ public final class AutomationCoordinator {
     private func finishBalanceCollection(completed: Bool) {
         defer { balanceTracker = nil; namedBalanceTracker = nil; onChange?() }
         guard completed else {
+            namedBankBalanceIssues = namedBalanceTracker?.issues ?? [:]
             bankBalanceStatus = "Collection interrupted; previous balances retained."
             return
         }
         let named = namedBalanceTracker?.readings ?? [:]
+        namedBankBalanceIssues = namedBalanceTracker?.issues ?? [:]
+        for (id, issue) in namedBankBalanceIssues {
+            let name = lastObservation?.namedBankBalances[id]?.name ?? "Jewel"
+            let outcome = named[id] == nil ? "not updated" : "warning (last confirmed reading retained)"
+            transition(stage, "\(name) balance \(outcome): \(issue)")
+        }
         for (id, value) in named {
             namedBankBalanceReadings[id] = value
             updatedBankBalanceIDs.insert(id)
             let amount = value.reading.added.map { "+\($0)" } ?? "not confirmed"
             transition(stage, "\(value.name) bank balance: \(value.reading.balance); amount added: \(amount)")
         }
-        if let reading = balanceTracker?.reading {
+        if let reading = balanceTracker?.lastConfirmedReading {
             bankBalanceReading = reading
             bankBalanceStatus = reading.added == nil
                 ? "Balance read, but the amount added could not be confirmed."
@@ -449,10 +458,14 @@ public final class AutomationCoordinator {
             let amount = reading.added.map { "+\($0)" } ?? "not confirmed"
             transition(stage, "Bank balance: \(reading.balance); amount added: \(amount)")
         } else {
-            bankBalanceStatus = "Couldn’t confirm this collection’s balance. Keep the bank open before and after depositing for two OCR reads. Check bankTitle, numeric regions and formats."
+            bankBalanceStatus = namedBankBalanceIssues.isEmpty
+                ? "Couldn’t confirm this collection’s balance. Check bankTitle and numeric calibration in Detect only."
+                : "No jewel balances updated. See the reason beside each row and check Calibration → Detect only with the bank open."
         }
         if !named.isEmpty {
-            bankBalanceStatus = "Updated \(named.count) jewel balances. Rows marked Previous reading were not refreshed. Amounts are observed increases, not independent deposit proof."
+            bankBalanceStatus = namedBankBalanceIssues.isEmpty
+                ? "Updated \(named.count) jewel balances. Amounts are observed increases, not independent deposit proof."
+                : "Saved \(named.count) confirmed jewel balances with their reading times. See row warnings for later unreadable frames or rows that could not update."
         }
     }
 

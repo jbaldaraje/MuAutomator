@@ -95,6 +95,10 @@ final class VisionAdapterTests: XCTestCase {
         profile.targets = []
         let closed = try VisionService.detect(image: frame, profile: profile, timestamp: Date())
         XCTAssertNil(closed.namedBankBalances[soul.id]?.count, "Numbers outside a recognized bank must not update balances")
+        XCTAssertEqual(closed.namedBankBalances[soul.id]?.text, "1000", "Detect only must expose OCR even when bank recognition fails")
+        XCTAssertTrue(closed.namedBankBalances[soul.id]?.failureReason?.contains("Bank not recognized") == true)
+        let liveClosed = try VisionService.detect(image: frame, profile: profile, timestamp: Date(), includeOCRDiagnostics: false)
+        XCTAssertEqual(liveClosed.namedBankBalances[soul.id]?.text, "", "Live capture still skips numeric OCR outside the recognized bank")
     }
 
     private func image(_ name: String) throws -> CGImage {

@@ -107,4 +107,70 @@ final class BankingVerifierTests: XCTestCase {
         XCTAssertNil(NamedBankBalanceSample(target: a, text: "1025", confidence: .nan).count)
     }
 
+    func testNamedBalanceDiagnosticsDistinguishBankOCRFormatAndShortVisibility() throws {
+        let region = try NormalizedRegion(x: 0, y: 0, width: 0.1, height: 0.1)
+        let target = NamedBankBalanceTarget(name: "Jewel of Soul", region: region)
+        let noBank = NamedBankBalanceSample(target: target, text: "100", confidence: 1, bankRecognized: false)
+        XCTAssertNil(noBank.count, "Diagnostic OCR must not bypass bank recognition")
+        XCTAssertEqual(noBank.text, "100")
+        XCTAssertTrue(noBank.failureReason?.contains("Bank not recognized") == true)
+        let cases: [(NamedBankBalanceSample, String)] = [
+            (.init(target: target, text: "", confidence: 0), "No text"),
+            (.init(target: target, text: "100", confidence: 0.5), "confidence"),
+            (.init(target: target, text: "1,000", confidence: 1), "digitsOnly")
+        ]
+        for (sample, expected) in cases {
+            var tracker = NamedBankBalanceTracker()
+            tracker.observe(Observation(matches: [.bankTitle: 1], namedBankBalances: [target.id: sample]))
+            XCTAssertTrue(tracker.issues[target.id]?.contains(expected) == true)
+            tracker.observe(Observation(matches: [:]))
+            XCTAssertTrue(tracker.issues[target.id]?.contains(expected) == true,
+                          "Closing the bank must retain the useful failure explanation")
+        }
+        var tracker = NamedBankBalanceTracker()
+        tracker.observe(Observation(matches: [:], namedBankBalances: [target.id: noBank]))
+        XCTAssertTrue(tracker.issues[target.id]?.contains("Bank was not recognized") == true)
+        tracker.observe(Observation(matches: [.bankTitle: 1], namedBankBalances: [
+            target.id: .init(target: target, text: "100", confidence: 1)]))
+        XCTAssertTrue(tracker.issues[target.id]?.contains("Only one") == true)
+        tracker.observe(Observation(matches: [.bankTitle: 1], namedBankBalances: [
+            target.id: .init(target: target, text: "100", confidence: 1)]))
+        XCTAssertNil(tracker.issues[target.id])
+        XCTAssertEqual(tracker.readings[target.id]?.reading.balance, 100)
+    }
+
+    func testPendingAndStaleDiagnosticsTakePriorityOverOldOCRFailure() throws {
+        let target = NamedBankBalanceTarget(name: "Jewel of Soul",
+            region: try NormalizedRegion(x: 0, y: 0, width: 0.1, height: 0.1))
+        var tracker = NamedBankBalanceTracker()
+        let bad = NamedBankBalanceSample(target: target, text: "bad", confidence: 1)
+        tracker.observe(Observation(matches: [.bankTitle: 1], namedBankBalances: [target.id: bad]))
+        tracker.observe(Observation(matches: [.bankTitle: 1, .processingIndicator: 1], namedBankBalances: [target.id: bad]))
+        XCTAssertTrue(tracker.issues[target.id]?.contains("processing") == true)
+        tracker.observe(Observation(timestamp: Date().addingTimeInterval(-5), matches: [.bankTitle: 1],
+                                    namedBankBalances: [target.id: bad]))
+        XCTAssertTrue(tracker.issues[target.id]?.contains("too old") == true)
+    }
+
+    func testConfirmedJewelBalancesSurviveUnreadableFramesAsBankCloses() throws {
+        let target = NamedBankBalanceTarget(name: "Jewel of Soul",
+            region: try NormalizedRegion(x: 0, y: 0, width: 0.1, height: 0.1))
+        var tracker = NamedBankBalanceTracker()
+        for (index, text) in ["100", "100", "125", "125"].enumerated() {
+            tracker.observe(Observation(timestamp: Date().addingTimeInterval(-1 + Double(index) * 0.1),
+                matches: [.bankTitle: 1], namedBankBalances: [target.id: .init(target: target, text: text, confidence: 1)]))
+        }
+        let confirmed = try XCTUnwrap(tracker.readings[target.id]?.reading)
+        XCTAssertEqual(confirmed.balance, 125)
+        XCTAssertEqual(confirmed.added, 25)
+        // Closing animation: header is recognized for one frame after numbers vanish.
+        tracker.observe(Observation(matches: [.bankTitle: 1], namedBankBalances: [
+            target.id: .init(target: target, text: "", confidence: 0)]))
+        tracker.observe(Observation(matches: [:], namedBankBalances: [
+            target.id: .init(target: target, text: "", confidence: 0, bankRecognized: false)]))
+        XCTAssertEqual(tracker.readings[target.id]?.reading, confirmed,
+                       "A closing frame must not erase a previously confirmed collection reading")
+        XCTAssertTrue(tracker.issues[target.id]?.contains("No text") == true)
+    }
+
 }

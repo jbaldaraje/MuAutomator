@@ -1283,7 +1283,58 @@ final class WorkflowTests: XCTestCase {
         XCTAssertEqual(runner.namedBankBalanceReadings[a.id]?.reading.added, 5)
         XCTAssertEqual(runner.namedBankBalanceReadings[b.id]?.reading, previousB)
         XCTAssertEqual(runner.updatedBankBalanceIDs, [a.id])
+        XCTAssertTrue(runner.namedBankBalanceIssues[b.id]?.contains("confidence") == true)
+        XCTAssertNil(runner.namedBankBalanceIssues[a.id])
         XCTAssertTrue(runner.events.contains { $0.message == "Jewel A bank balance: 505; amount added: +5" })
+    }
+
+    @MainActor func testCompletedMacroPublishesConfirmedBalancesDespiteClosingOCRFailure() async throws {
+        let target = NamedBankBalanceTarget(name: "Jewel of Soul",
+            region: try NormalizedRegion(x: 0, y: 0, width: 0.1, height: 0.1))
+        let io = FakeIO(); io.frames = [[.bankTitle]]
+        io.namedBalances = [target.id: .init(target: target, text: "100", confidence: 1)]
+        var postDepositReads = 0
+        io.onObservation = {
+            if io.actions == [.key(12)] {
+                postDepositReads += 1
+                if postDepositReads == 2 {
+                    // The next frame loses the numbers before the header disappears.
+                    io.namedBalances[target.id] = .init(target: target, text: "", confidence: 0)
+                }
+            }
+        }
+        io.onAction = { action in
+            if action == .key(12) { io.namedBalances[target.id] = .init(target: target, text: "125", confidence: 1) }
+            if action == .key(13) { io.frames = [[]] }
+        }
+        var config = AutomationConfiguration(); config.dryRun = false
+        var settings = WorkflowSettings(); settings.bankingInputMode = .recordedInput
+        var macro = recording([.key(12), .key(13)])
+        macro.steps[0].delayBeforeSeconds = 0.04
+        macro.steps[1].delayBeforeSeconds = 0.06
+        settings.bankingRecording = macro; settings.pollSeconds = 0.01
+        let runner = AutomationCoordinator()
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await finish(runner)
+        XCTAssertEqual(runner.stage, .completed)
+        XCTAssertEqual(io.actions, [.key(12), .key(13)], "Balance tracking must not repeat or add inputs")
+        XCTAssertEqual(runner.namedBankBalanceReadings[target.id]?.reading.balance, 125)
+        XCTAssertEqual(runner.namedBankBalanceReadings[target.id]?.reading.added, 25)
+        XCTAssertTrue(runner.namedBankBalanceIssues[target.id]?.contains("No text") == true)
+        let previous = runner.namedBankBalanceReadings[target.id]?.reading
+
+        // An interrupted later macro cannot publish even a confirmed partial result.
+        io.actions = []; postDepositReads = 0; io.frames = [[.bankTitle]]
+        io.namedBalances[target.id] = .init(target: target, text: "500", confidence: 1)
+        io.onAction = { action in
+            if action == .key(12) { io.namedBalances[target.id] = .init(target: target, text: "525", confidence: 1) }
+            if action == .key(13) { io.unsafe = true }
+        }
+        try runner.start(configuration: config, settings: settings, io: io)
+        try await finish(runner)
+        XCTAssertEqual(runner.stage, .waitingForManualIntervention)
+        XCTAssertEqual(runner.namedBankBalanceReadings[target.id]?.reading, previous)
+        XCTAssertTrue(runner.updatedBankBalanceIDs.isEmpty)
     }
 
 }

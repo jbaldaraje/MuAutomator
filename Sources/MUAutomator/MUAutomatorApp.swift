@@ -188,9 +188,19 @@ struct DashboardView: View {
                                                 if !model.runner.updatedBankBalanceIDs.contains(target.id) {
                                                     Text("Previous reading").foregroundStyle(.orange)
                                                 }
+                                                if let issue = model.runner.namedBankBalanceIssues[target.id] {
+                                                    Text("Last confirmed reading retained. \(issue)")
+                                                        .foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                                                }
                                             }.font(.caption)
                                         } else {
-                                            Text("—"); Text("Not confirmed"); Text("No reading yet").font(.caption)
+                                            Text("—"); Text("Not confirmed")
+                                            VStack(alignment: .leading, spacing: 4) {
+                                                Text("No reading yet")
+                                                if let issue = model.runner.namedBankBalanceIssues[target.id] {
+                                                    Text(issue).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                                                }
+                                            }.font(.caption)
                                         }
                                     }
                                 }

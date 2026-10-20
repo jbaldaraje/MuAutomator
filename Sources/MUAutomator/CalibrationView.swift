@@ -105,7 +105,7 @@ struct CalibrationView: View {
                         .font(.caption)
                 }
                 HStack {
-                    Text("\(capture.profile.targets.count) labeled regions")
+                    Text("\(capture.profile.targets.count) workflow regions • \(capture.profile.namedBankBalances.count) jewel balances")
                     Button("Save as startup default") { capture.save() }
                     Button("Clear regions", role: .destructive) { capture.clear() }
                     Button("Detect only") { Task { await capture.detect(strictRecognition: configuration.strictGameplayRecognition) } }
@@ -121,6 +121,9 @@ struct CalibrationView: View {
                         if let sample = result.namedBankBalances[target.id] {
                             Text("\(target.name): \(sample.count.map { String($0) } ?? "unreadable") • OCR: \(sample.text) • confidence \(sample.confidence, specifier: "%.2f") / \(target.threshold, specifier: "%.2f")")
                                 .font(.caption.monospaced()).textSelection(.enabled)
+                            if let issue = sample.failureReason {
+                                Text(issue).font(.caption).foregroundStyle(.orange)
+                            }
                         }
                     }
                     ForEach(capture.profile.targets) { target in
@@ -310,6 +313,8 @@ struct CalibrationView: View {
                 }
                 Text(requiredRoles.contains(capture.role)
                      ? "Required before Start with your current options."
+                     : capture.role == .bankTitle && !capture.profile.namedBankBalances.isEmpty
+                     ? "Required for reading your named jewel balances. Recorded playback can start without it, but balances update only when this header is recognized."
                      : "Not required by Start with your current options; check the workflow description above for when this target is needed.")
                     .font(.caption).foregroundStyle(.secondary)
             }.frame(maxWidth: .infinity, alignment: .leading).padding(8)

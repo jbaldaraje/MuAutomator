@@ -239,7 +239,10 @@ final class SessionModel: ObservableObject {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             let text = runner.events.map { event in
-                "\(event.timestamp.ISO8601Format()) | \(event.previous.rawValue) → \(event.stage.rawValue) | \(String(format: "%.2f", event.elapsed))s | \(event.message) | \(event.observation?.state.rawValue ?? "unknown") | matches: \(event.observation?.matches.description ?? "") | scores: \(event.observation?.scores.description ?? "") | OCR: \(event.observation?.text.description ?? "")"
+                let balances = (event.observation?.namedBankBalances ?? [:]).values.sorted { $0.name < $1.name }.map { sample in
+                    "\(sample.name): OCR=\(sample.text), count=\(sample.count.map { String($0) } ?? "unreadable"), confidence=\(sample.confidence), issue=\(sample.failureReason ?? "none")"
+                }.joined(separator: "; ")
+                return "\(event.timestamp.ISO8601Format()) | \(event.previous.rawValue) → \(event.stage.rawValue) | \(String(format: "%.2f", event.elapsed))s | \(event.message) | \(event.observation?.state.rawValue ?? "unknown") | matches: \(event.observation?.matches.description ?? "") | scores: \(event.observation?.scores.description ?? "") | OCR: \(event.observation?.text.description ?? "") | jewel OCR: \(balances)"
             }.joined(separator: "\n")
             let report = "Last attempted click: \(lastClick ?? "none")\n" + text
             try report.write(to: url, atomically: true, encoding: .utf8)
