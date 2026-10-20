@@ -17,6 +17,11 @@ final class SessionModel: ObservableObject {
     @Published private(set) var lastRunFrame: CGImage?
     @Published private(set) var lastRunObservation: Observation?
     @Published private(set) var lastRunProfile = CalibrationProfile()
+    @Published private(set) var checkingBankRead = false
+    @Published private(set) var bankReadCheckMessage: String?
+    @Published private(set) var bestBankFrame: CGImage?
+    @Published private(set) var bestBankObservation: Observation?
+    private var bestBankScore = -Double.infinity
     let permissions = PermissionStatusModel()
     let capture = CaptureModel()
     let runner = AutomationCoordinator()
@@ -74,7 +79,7 @@ final class SessionModel: ObservableObject {
         event.keyCode == 15 && event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.control, .option, .command]
     }
 
-    var locked: Bool { runner.active || arming || recorder.active }
+    var locked: Bool { runner.active || arming || recorder.active || checkingBankRead }
 
     func save() {
         guard !locked else { return }
@@ -163,12 +168,60 @@ final class SessionModel: ObservableObject {
     private func configureDiagnostics(_ io: MacWorkflowIO) {
         lastClick = nil; beforeClickFrame = nil; lastRunFrame = nil; lastRunObservation = nil
         lastRunProfile = io.profile
+        bestBankFrame = nil; bestBankObservation = nil; bestBankScore = -Double.infinity
         io.onFrame = { [weak self] image, observation in
-            self?.lastRunFrame = image; self?.lastRunObservation = observation
+            guard let self else { return }
+            lastRunFrame = image; lastRunObservation = observation
+            let score = observation.scores[.bankTitle] ?? -1
+            if bestBankFrame == nil || score > bestBankScore {
+                bestBankScore = score; bestBankFrame = image; bestBankObservation = observation
+            }
         }
         io.onClick = { [weak self] description, image in
             self?.lastClick = description; self?.beforeClickFrame = image
         }
+    }
+
+    /// Exercise the same focused capture and recognition as playback, with no input delivery.
+    func testLiveBankRead() {
+        guard !locked, !capture.busy else { return }
+        do {
+            guard let window = capture.windows.first(where: { $0.windowID == capture.selectedID }) else {
+                throw WorkflowFailure.prerequisite("Select your open.mu window in Calibration first.")
+            }
+            try MacWorkflowIO.requireTargets([.bankTitle], in: capture.profile,
+                                             strictGameplayRecognition: configuration.strictGameplayRecognition)
+            let recording = settings.bankingInputMode == .recordedInput ? settings.bankingRecording : nil
+            let io = try MacWorkflowIO(window: window, profile: capture.profile,
+                                       strictGameplayRecognition: configuration.strictGameplayRecognition,
+                                       recordedWindow: recording)
+            configureDiagnostics(io)
+            capture.stopPreview()
+            checkingBankRead = true
+            bankReadCheckMessage = "Reading in 5 seconds. Focus the selected game and keep the Jewel Bank open. No clicks or keys will be sent."
+            armTask = Task { [weak self] in
+                guard let self else { return }
+                defer { checkingBankRead = false; armTask = nil }
+                do {
+                    try await Task.sleep(nanoseconds: 5_000_000_000)
+                    try Task.checkCancellation()
+                    try await io.prepareSelectedWindow()
+                    var recognized = false
+                    for _ in 0..<3 {
+                        let frame = try await io.observe()
+                        recognized = recognized || frame.has(.bankTitle)
+                        try await Task.sleep(nanoseconds: 250_000_000)
+                    }
+                    bankReadCheckMessage = recognized
+                        ? "Live bank header matched. Inspect the focused-game reading below. This check does not change collection totals."
+                        : "Live bank header did not match. Inspect its captured region and score below; compare them with Calibration."
+                } catch is CancellationError {
+                    bankReadCheckMessage = "Live bank reading cancelled."
+                } catch {
+                    bankReadCheckMessage = "Live bank reading failed: \(error.localizedDescription)"
+                }
+            }
+        } catch { bankReadCheckMessage = error.localizedDescription }
     }
 
     func testInventoryClick() {
@@ -244,7 +297,11 @@ final class SessionModel: ObservableObject {
                 }.joined(separator: "; ")
                 return "\(event.timestamp.ISO8601Format()) | \(event.previous.rawValue) → \(event.stage.rawValue) | \(String(format: "%.2f", event.elapsed))s | \(event.message) | \(event.observation?.state.rawValue ?? "unknown") | matches: \(event.observation?.matches.description ?? "") | scores: \(event.observation?.scores.description ?? "") | OCR: \(event.observation?.text.description ?? "") | jewel OCR: \(balances)"
             }.joined(separator: "\n")
-            let report = "Last attempted click: \(lastClick ?? "none")\n" + text
+            let best = bestBankObservation
+            let score = best?.scores[.bankTitle].map { String(format: "%.3f", $0) } ?? "unavailable"
+            let threshold = lastRunProfile.targets.first { $0.role == .bankTitle }?.threshold
+            let header = "Best live bankTitle score: \(score); saved threshold: \(threshold.map { String($0) } ?? "not calibrated"); matched: \(best?.has(.bankTitle) ?? false)\n"
+            let report = "Last attempted click: \(lastClick ?? "none")\n" + header + text
             try report.write(to: url, atomically: true, encoding: .utf8)
         } catch { self.error = error.localizedDescription }
     }

@@ -78,6 +78,44 @@ final class CalibrationEditorTests: XCTestCase {
         XCTAssertNil(model.detection)
     }
 
+    @MainActor func testOCROnlySelectionPersistsAndPreservesOtherCalibration() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = try fixture(in: directory)
+        var profile = try JSONDecoder().decode(CalibrationProfile.self, from: Data(contentsOf: url))
+        let region = try NormalizedRegion(x: 0.3, y: 0.2, width: 0.1, height: 0.1)
+        let template = GrayImage(width: 2, height: 2, pixels: [0, 255, 0, 255])
+        profile.targets.append(.init(role: .bankTitle, region: region, template: template,
+                                     expectedText: "Jewel bank", threshold: 0.95))
+        profile.namedBankBalances = [.init(name: "Jewel of Soul", region: region, format: .commaGrouped)]
+        try JSONEncoder().encode(profile).write(to: url)
+        let model = CaptureModel(profileURL: url); model.role = .bankTitle
+        model.useOCROnly(); model.save()
+        let loaded = CaptureModel(profileURL: url).profile
+        let header = try XCTUnwrap(loaded.targets.first { $0.role == .bankTitle })
+        XCTAssertNil(header.template)
+        XCTAssertEqual(header.expectedText, "Jewel bank")
+        XCTAssertEqual(header.threshold, 0.95)
+        XCTAssertEqual(header.region, region)
+        XCTAssertEqual(loaded.targets[0].expectedText, profile.targets[0].expectedText)
+        XCTAssertEqual(loaded.targets[0].region, profile.targets[0].region)
+        XCTAssertEqual(loaded.namedBankBalances.map(\.id), profile.namedBankBalances.map(\.id))
+    }
+
+    @MainActor func testOCROnlyCannotRemoveTemplateWithoutAPhrase() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = try fixture(in: directory)
+        var profile = try JSONDecoder().decode(CalibrationProfile.self, from: Data(contentsOf: url))
+        profile.targets[0].expectedText = nil
+        profile.targets[0].template = GrayImage(width: 2, height: 2, pixels: [0, 255, 0, 255])
+        try JSONEncoder().encode(profile).write(to: url)
+        let model = CaptureModel(profileURL: url); model.role = .inventoryControl
+        model.useOCROnly()
+        XCTAssertNotNil(model.profile.targets[0].template)
+        XCTAssertTrue(model.message.contains("enter its fixed OCR phrase"))
+    }
+
     private func fixture(in directory: URL) throws -> URL {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent("calibration.json")

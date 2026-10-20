@@ -63,7 +63,9 @@ enum VisionService {
             let expected = target.expectedText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let numeric = target.role.isNumericEvidence
             let recoveryOCR = target.role.isRecoveryEvidence && !expected.isEmpty
-            let needsOCR = numeric || (!expected.isEmpty && (strictRecognition || recoveryOCR || score == nil || includeOCRDiagnostics))
+            // Diagnose a rejected bank template in live capture without changing its matching rule.
+            let rejectedBankHeader = target.role == .bankTitle && (score ?? 0) < target.threshold
+            let needsOCR = numeric || (!expected.isEmpty && (strictRecognition || recoveryOCR || score == nil || includeOCRDiagnostics || rejectedBankHeader))
             if needsOCR {
                 let candidates = try recognize(cropped)
                 let text = candidates.map(\.text).joined(separator: " ")

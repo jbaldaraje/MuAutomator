@@ -78,8 +78,10 @@ struct CalibrationView: View {
                         } else {
                             HStack {
                                 TextField("Optional OCR phrase for this target", text: $capture.expectedText)
+                                Button("Use OCR only") { capture.useOCROnly() }
+                                    .disabled(capture.expectedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                                 Button("Use image only") { capture.expectedText = "" }
-                                    .disabled(capture.expectedText.isEmpty)
+                                    .disabled(capture.expectedText.isEmpty || capture.profile.targets.first(where: { $0.role == capture.role })?.template == nil)
                             }
                         }
                         HStack {

@@ -67,6 +67,20 @@ final class CaptureModel: ObservableObject {
         message = "Updated \(role.rawValue) settings. Save the profile to keep them after relaunch."
     }
 
+    /// Explicitly select the existing phrase-only recognition path without redrawing.
+    func useOCROnly() {
+        let phrase = expectedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !role.isNumericEvidence, !phrase.isEmpty,
+              let index = profile.targets.firstIndex(where: { $0.role == role }) else {
+            message = "Select a saved target and enter its fixed OCR phrase first."
+            return
+        }
+        profile.targets[index].expectedText = phrase
+        profile.targets[index].template = nil
+        invalidateDetection()
+        message = "\(role.rawValue) now uses its OCR phrase in both Detect only and live playback. Save the profile."
+    }
+
     private func refreshProfiles() {
         let directory = profileURL.deletingLastPathComponent().appendingPathComponent("Profiles")
         namedProfiles = ((try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [])

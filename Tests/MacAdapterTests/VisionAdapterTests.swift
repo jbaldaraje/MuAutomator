@@ -101,6 +101,39 @@ final class VisionAdapterTests: XCTestCase {
         XCTAssertEqual(liveClosed.namedBankBalances[soul.id]?.text, "", "Live capture still skips numeric OCR outside the recognized bank")
     }
 
+    @MainActor func testHeaderPhraseRecognitionAgreesBetweenLiveAndDetectOnlyWithoutWeakeningTemplateRule() throws {
+        let canvas = NSImage(size: NSSize(width: 500, height: 100))
+        canvas.lockFocus()
+        NSColor.white.setFill()
+        NSBezierPath(rect: NSRect(x: 0, y: 0, width: 500, height: 100)).fill()
+        ("Jewel bank" as NSString).draw(at: NSPoint(x: 20, y: 25), withAttributes: [
+            .font: NSFont.boldSystemFont(ofSize: 40), .foregroundColor: NSColor.black])
+        canvas.unlockFocus()
+        let frame = try XCTUnwrap(canvas.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        let region = try AutomationCore.NormalizedRegion(x: 0, y: 0, width: 1, height: 1)
+        var profile = CalibrationProfile()
+        let wrongTemplate = GrayImage(width: 2, height: 2, pixels: [0, 0, 0, 0])
+        profile.targets = [.init(role: .bankTitle, region: region, template: wrongTemplate,
+                                 expectedText: "Jewel bank", threshold: 0.8)]
+        let rejected = try VisionService.detect(image: frame, profile: profile, timestamp: Date(),
+                                                strictRecognition: false, includeOCRDiagnostics: false)
+        XCTAssertFalse(rejected.has(.bankTitle), "Diagnostic OCR must not silently override a saved template")
+        XCTAssertTrue(rejected.text[.bankTitle]?.lowercased().contains("jewel bank") == true,
+                      "A rejected live header must expose its OCR for diagnosis")
+        profile.targets[0].template = nil // The user's explicit Use OCR only choice.
+        for strict in [false, true] {
+            let dry = try VisionService.detect(image: frame, profile: profile, timestamp: Date(),
+                                               strictRecognition: strict, includeOCRDiagnostics: true)
+            let live = try VisionService.detect(image: frame, profile: profile, timestamp: Date(),
+                                                strictRecognition: strict, includeOCRDiagnostics: false)
+            XCTAssertTrue(dry.has(.bankTitle))
+            XCTAssertTrue(live.has(.bankTitle))
+        }
+        profile.targets[0].expectedText = "A title absent from this image"
+        XCTAssertFalse(try VisionService.detect(image: frame, profile: profile, timestamp: Date(),
+                                                strictRecognition: false, includeOCRDiagnostics: false).has(.bankTitle))
+    }
+
     private func image(_ name: String) throws -> CGImage {
         let url = try XCTUnwrap(Bundle.module.url(forResource: name, withExtension: "png", subdirectory: "Fixtures"))
         let image = try XCTUnwrap(NSImage(contentsOf: url))

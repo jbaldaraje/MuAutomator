@@ -222,6 +222,7 @@ struct DashboardView: View {
                         } else {
                             Text("No confirmed balance yet").font(.headline)
                         }
+                        LiveBankReadView(model: model)
                         Text(model.runner.bankBalanceStatus).font(.caption).textSelection(.enabled)
                         Text("In Calibration, label bankTitle and add a named number region for each jewel under Named jewel balances. Recorded workflows need a pause with the bank visible before and after the deposit. Readings are retained for this app session.")
                             .font(.caption).foregroundStyle(.secondary)
@@ -414,6 +415,7 @@ private struct WindowAppearance: NSViewRepresentable {
 @MainActor
 private extension SessionModel {
     var statusTitle: String {
+        if checkingBankRead { return "Checking live bank recognition" }
         if arming { return "Starting in 5 seconds…" }
         if recorder.active { return "Recording inputs" }
         if runner.isWaitingForFocus { return "Waiting for game focus" }
@@ -433,6 +435,7 @@ private extension SessionModel {
     }
 
     var statusMessage: String {
+        if checkingBankRead { return bankReadCheckMessage ?? "Focus the game with the bank open. No input is sent." }
         if let error = runner.lastError ?? error { return error }
         if arming { return "Get ready! Focus your selected game window." }
         if recorder.active { return "I'm watching your inputs. Stop recording with Control–Option–Command–R." }
@@ -590,5 +593,46 @@ private enum KnightScene {
         camera.position = SCNVector3(0, 0.40, 6)
         scene.rootNode.addChildNode(camera)
         return scene
+    }
+}
+
+
+@MainActor
+private struct LiveBankReadView: View {
+    @ObservedObject var model: SessionModel
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button("Test live bank reading (5 seconds, no clicks)") { model.testLiveBankRead() }
+                .disabled(model.locked || model.capture.busy)
+            if let message = model.bankReadCheckMessage { Text(message).font(.caption).textSelection(.enabled) }
+            if let frame = model.bestBankFrame, let observation = model.bestBankObservation {
+                DisclosureGroup("Live bank recognition details") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Best header frame from the latest run or live test • \(observation.timestamp.formatted(date: .abbreviated, time: .standard))")
+                            .font(.caption)
+                        if let target = model.lastRunProfile.targets.first(where: { $0.role == .bankTitle }) {
+                            let score = observation.scores[.bankTitle].map { String(format: "%.3f", $0) } ?? "unavailable"
+                            Text("bankTitle: \(observation.has(.bankTitle) ? "match" : "no match") • live score \(score) / \(target.threshold, specifier: "%.3f")")
+                                .font(.caption.monospaced()).textSelection(.enabled)
+                            Text("Method: \(target.template == nil ? "OCR phrase" : "saved image") • Expected phrase: \(target.expectedText ?? "none") • Actual OCR: \(observation.text[.bankTitle] ?? "not requested")")
+                                .font(.caption).textSelection(.enabled)
+                            if let crop = VisionService.crop(frame, region: target.region) {
+                                Text("Header region captured while the game was focused").font(.caption)
+                                Image(decorative: crop, scale: 1).resizable().scaledToFit().frame(maxWidth: 400, maxHeight: 100)
+                            }
+                        } else { Text("bankTitle was missing from the profile used by this run.").foregroundStyle(.orange) }
+                        ForEach(model.lastRunProfile.namedBankBalances) { target in
+                            if let sample = observation.namedBankBalances[target.id] {
+                                Text("\(target.name): \(sample.count.map { String($0) } ?? "unreadable") • OCR: \(sample.text) • confidence \(sample.confidence, specifier: "%.2f") / \(target.threshold, specifier: "%.2f")")
+                                    .font(.caption.monospaced()).textSelection(.enabled)
+                            }
+                        }
+                        DisclosureGroup("Captured game window") {
+                            Image(decorative: frame, scale: 1).resizable().scaledToFit().frame(maxHeight: 420)
+                        }
+                    }.padding(.top, 8)
+                }
+            }
+        }
     }
 }
