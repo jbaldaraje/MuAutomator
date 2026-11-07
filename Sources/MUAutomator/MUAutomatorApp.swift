@@ -13,6 +13,7 @@ struct MUAutomatorApp: App {
     var body: some Scene {
         Window("MU Automator", id: "main") {
             AppShellView(model: model)
+                .onAppear { delegate.session = model }
         }.defaultSize(width: 1280, height: 820)
         MenuBarExtra("MU Automator", systemImage: "shield.lefthalf.filled") {
             MenuBarControls(model: model)
@@ -35,6 +36,7 @@ private enum AppScreen: String, CaseIterable {
     case workflows = "Workflows"
     case recording = "Record inputs"
     case activity = "Activity"
+    case queue = "Window queue"
 
     var symbol: String {
         switch self {
@@ -43,6 +45,7 @@ private enum AppScreen: String, CaseIterable {
         case .workflows: return "gearshape"
         case .recording: return "record.circle"
         case .activity: return "list.bullet"
+        case .queue: return "rectangle.on.rectangle"
         }
     }
 }
@@ -112,6 +115,8 @@ private struct AppShellView: View {
             RouteRecordingView(model: model, recorder: model.recorder)
         case .activity:
             ActivityLogView(model: model)
+        case .queue:
+            WindowQueueView(model: model, capture: model.capture)
         }
     }
 }
@@ -170,6 +175,10 @@ struct DashboardView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
+                if model.windowQueue.active || model.queuePreparing {
+                    Label("Window queue owns input. Each window’s balances and controls are on the Window queue screen.", systemImage: "rectangle.on.rectangle")
+                        .font(.callout).foregroundStyle(.cyan)
+                }
                 GroupBox("Bank balance") {
                     VStack(alignment: .leading, spacing: 10) {
                         if !capture.profile.namedBankBalances.isEmpty {
@@ -272,7 +281,11 @@ struct DashboardView: View {
                                 .font(.caption)
                         }
                         if model.settings.bankingInputMode == .recordedInput {
-                            Text("Completed macro runs: \(model.runner.macroRunsCompleted)")
+                            if model.windowQueue.active {
+                                Text("Queue runs completed: \(model.windowQueue.items.reduce(0) { $0 + $1.completedRuns })")
+                            } else {
+                                Text("Completed macro runs: \(model.runner.macroRunsCompleted)")
+                            }
                         }
                         if let error = model.runner.lastError { Text(error).foregroundStyle(.red).textSelection(.enabled) }
                         Text("Screen Recording: \(permissionLabel(permissions.screenRecordingAllowed)) • Accessibility: \(permissionLabel(permissions.accessibilityAllowed))")
@@ -365,6 +378,19 @@ struct ActivityLogView: View {
 // The app owns the session. Hiding its window must never cancel the runner.
 @MainActor
 final class BackgroundAppDelegate: NSObject, NSApplicationDelegate {
+    weak var session: SessionModel?
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let session else { return .terminateNow }
+        session.stop(); session.capture.stopPreview()
+        Task { @MainActor in
+            // Let all active runners deliver their held-input release before process exit.
+            while session.locked { try? await Task.sleep(nanoseconds: 20_000_000) }
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -415,6 +441,9 @@ private struct WindowAppearance: NSViewRepresentable {
 @MainActor
 private extension SessionModel {
     var statusTitle: String {
+        if queuePreparing { return "Preparing window queue" }
+        if windowQueue.active { return "\(windowQueue.current?.entry.profile.name ?? "Window queue"): \(windowQueue.paused ? "Paused" : windowQueue.current?.status ?? windowQueue.phase.rawValue)" }
+        if windowQueue.phase == .failed { return "Window queue needs attention" }
         if checkingBankRead { return "Checking live bank recognition" }
         if arming { return "Starting in 5 seconds…" }
         if recorder.active { return "Recording inputs" }
@@ -423,18 +452,22 @@ private extension SessionModel {
     }
 
     var statusSymbol: String {
+        if windowQueue.active { return windowQueue.paused ? "pause.circle.fill" : "rectangle.on.rectangle" }
         if runner.lastError != nil || error != nil { return "exclamationmark.triangle.fill" }
         if runner.stage == .paused || runner.isWaitingForFocus { return "pause.circle.fill" }
         return runner.active || arming || recorder.active ? "waveform.path" : "shield.checkered"
     }
 
     var statusColor: Color {
+        if windowQueue.active { return windowQueue.paused ? .yellow : .cyan }
         if runner.lastError != nil || error != nil { return .orange }
         if runner.stage == .paused || runner.isWaitingForFocus { return .yellow }
         return runner.active || arming || recorder.active ? .cyan : .mint
     }
 
     var statusMessage: String {
+        if queuePreparing { return "The queue will focus each assigned game window in turn." }
+        if windowQueue.active { return windowQueue.current?.runner.events.last?.message ?? "Waiting for the next window macro." }
         if checkingBankRead { return bankReadCheckMessage ?? "Focus the game with the bank open. No input is sent." }
         if let error = runner.lastError ?? error { return error }
         if arming { return "Get ready! Focus your selected game window." }
@@ -452,16 +485,18 @@ private struct MenuBarControls: View {
 
     var body: some View {
         Label(model.statusTitle, systemImage: model.statusSymbol)
-        Text("Completed macro runs: \(model.runner.macroRunsCompleted)")
+        if model.windowQueue.active {
+            Text("Queue runs completed: \(model.windowQueue.items.reduce(0) { $0 + $1.completedRuns })")
+        } else { Text("Completed macro runs: \(model.runner.macroRunsCompleted)") }
         if let error = model.runner.lastError { Text(error) }
         Divider()
         Button("Show MU Automator") {
             openWindow(id: "main")
             BackgroundAppDelegate.showMainWindow()
         }
-        Button(model.runner.stage == .paused ? "Resume in 5 seconds" : "Pause") {
+        Button((model.windowQueue.active ? model.windowQueue.paused : model.runner.stage == .paused) ? "Resume in 5 seconds" : "Pause") {
             model.pauseOrResume()
-        }.disabled(!model.runner.active || model.arming)
+        }.disabled((!model.runner.active && !model.windowQueue.active) || model.arming)
         Button("Emergency Stop", role: .destructive) { model.stop() }
         Divider()
         Button("Quit MU Automator") {

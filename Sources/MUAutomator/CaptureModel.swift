@@ -113,6 +113,12 @@ final class CaptureModel: ObservableObject {
         } catch { message = error.localizedDescription }
     }
 
+    func applyWindowProfile(_ value: CalibrationProfile, windowID: CGWindowID?) throws {
+        try value.validate()
+        stopPreview(); profile = value; select(windowID); loadTargetSettings()
+        message = "Window macro calibration loaded. Recapture and review before changing its saved profile."
+    }
+
     func select(_ id: CGWindowID?) {
         stopPreview()
         selectedID = id

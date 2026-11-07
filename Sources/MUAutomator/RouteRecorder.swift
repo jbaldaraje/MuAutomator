@@ -141,17 +141,22 @@ struct RouteRecordingView: View {
                     guard let window = model.capture.windows.first(where: { $0.windowID == model.capture.selectedID }) else { return }
                     model.capture.stopPreview()
                     recorder.start(window: window, profile: model.capture.profile)
-                }.disabled(recorder.active || model.capture.selectedID == nil || model.capture.busy)
+                }.disabled(model.locked || model.capture.selectedID == nil || model.capture.busy)
                 Button("Stop recording") { recorder.stop() }.disabled(!recorder.active)
             }
             Text("Wait for the beep before starting. Release all controls, then stop from the game with Control–Option–Command–R. Recording observes your own input; it never sends clicks. Left clicks, unmodified key presses/holds and pauses are supported. Drags and simultaneous controls are not supported. Keep browser size, game layout and zoom consistent for playback.")
                 .font(.caption).foregroundStyle(.secondary)
-            if let recording = recorder.recording {
+            if let recording = displayedRecording {
                 List(Array(recording.steps.enumerated()), id: \.element.id) { index, step in
                     Text("\(index + 1). Wait \(step.delayBeforeSeconds, specifier: "%.2f")s • \(String(describing: step.action)) • hold \(step.holdSeconds, specifier: "%.2f")s")
                         .font(.caption.monospaced())
                 }
             }
-        }.padding(24).disabled(model.runner.active || model.arming)
+        }.padding(24).disabled(model.runner.active || model.arming || model.queuePreparing || model.windowQueue.active || model.checkingBankRead)
+    }
+
+    private var displayedRecording: InputRecording? {
+        if recorder.active { return recorder.recording }
+        return recorder.purpose == .jewelBanking ? model.settings.bankingRecording : model.settings.route.recording
     }
 }

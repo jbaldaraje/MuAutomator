@@ -26,6 +26,18 @@ final class SessionModel: ObservableObject {
     let capture = CaptureModel()
     let runner = AutomationCoordinator()
     let recorder = RouteRecorder()
+    let windowQueue = WindowMacroQueue()
+    @Published private(set) var windowProfiles: [WindowMacroProfile] = []
+    @Published var windowProfileName = ""
+    @Published private(set) var editingWindowProfileID: UUID?
+    @Published var queueWindowAssignments: [UUID: CGWindowID] = [:]
+    @Published var includedQueueProfiles: Set<UUID> = []
+    @Published var queueInputConsent = false
+    @Published var queueFailureReviewed = false
+    @Published private(set) var queuePreparing = false
+    private var queueReviewedProfiles: Set<UUID> = []
+    private var queueHistory: [UUID: WindowMacroRuntime] = [:]
+    private var windowProfilesLoadFailed = false
     private let directory: URL
     private var armTask: Task<Void, Never>?
     private var reviewedData: Data?
@@ -43,6 +55,18 @@ final class SessionModel: ObservableObject {
                 try settings.validate()
             }
         } catch { self.error = "Settings load failed: \(error.localizedDescription). Review before saving." }
+        do {
+            windowProfiles = try WindowMacroProfileStore(url: directory.appendingPathComponent("window-macros.json")).load()
+            includedQueueProfiles = Set(windowProfiles.map(\.id))
+        } catch {
+            windowProfilesLoadFailed = true
+            self.error = "Window macro profiles could not be loaded: \(error.localizedDescription)"
+        }
+        windowQueue.onChange = { [weak self] in
+            guard let self else { return }
+            for item in windowQueue.items { queueHistory[item.id] = item }
+            objectWillChange.send()
+        }
         runner.onChange = { [weak self] in self?.objectWillChange.send() }
         recorder.onChange = { [weak self] in self?.objectWillChange.send() }
         recorder.onRecorded = { [weak self] purpose, recording in
@@ -79,7 +103,7 @@ final class SessionModel: ObservableObject {
         event.keyCode == 15 && event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.control, .option, .command]
     }
 
-    var locked: Bool { runner.active || arming || recorder.active || checkingBankRead }
+    var locked: Bool { runner.active || arming || recorder.active || checkingBankRead || queuePreparing || windowQueue.active }
 
     func save() {
         guard !locked else { return }
@@ -118,6 +142,9 @@ final class SessionModel: ObservableObject {
             try configuration.validate(); try settings.validate()
             if runner.stage == .waitingForManualIntervention && !failureReviewed {
                 throw WorkflowFailure.prerequisite("Inspect the game and log, then acknowledge the unresolved previous attempt before starting a new workflow")
+            }
+            if windowQueue.lastError != nil && !queueFailureReviewed {
+                throw WorkflowFailure.prerequisite("Resolve and acknowledge the failed Window queue before starting new input.")
             }
             guard liveConsent, !configuration.dryRun else { throw WorkflowFailure.prerequisite("Enable live mode and explicitly allow game input") }
             if !requiredTargets(routeTest: routeTest).isEmpty {
@@ -257,6 +284,10 @@ final class SessionModel: ObservableObject {
     }
 
     func pauseOrResume() {
+        if windowQueue.active {
+            if windowQueue.paused { resumeWindowQueue() } else { windowQueue.pause() }
+            return
+        }
         guard !arming else { return }
         guard runner.stage == .paused else { runner.pause(); return }
         arming = true; error = "Resuming in 5 seconds. Focus the selected game window."
@@ -275,6 +306,11 @@ final class SessionModel: ObservableObject {
     }
 
     private func pauseFromHotkey() {
+        if windowQueue.active {
+            do { if windowQueue.paused { try windowQueue.resume() } else { windowQueue.pause() } }
+            catch { self.error = error.localizedDescription }
+            return
+        }
         guard !arming else { return }
         do {
             if runner.stage == .paused { try runner.resume() } else { runner.pause() }
@@ -282,7 +318,7 @@ final class SessionModel: ObservableObject {
     }
 
     func stop() {
-        armTask?.cancel(); runner.stop(); liveConsent = false
+        armTask?.cancel(); windowQueue.stop(); runner.stop(); liveConsent = false; queueInputConsent = false
         recorder.stop(saveRecording: false)
         objectWillChange.send()
     }
@@ -301,7 +337,16 @@ final class SessionModel: ObservableObject {
             let score = best?.scores[.bankTitle].map { String(format: "%.3f", $0) } ?? "unavailable"
             let threshold = lastRunProfile.targets.first { $0.role == .bankTitle }?.threshold
             let header = "Best live bankTitle score: \(score); saved threshold: \(threshold.map { String($0) } ?? "not calibrated"); matched: \(best?.has(.bankTitle) ?? false)\n"
-            let report = "Last attempted click: \(lastClick ?? "none")\n" + header + text
+            let queueLogs = queueHistory.values.sorted { $0.entry.profile.name < $1.entry.profile.name }.map { item in
+                let events = item.runner.events.map { event in
+                    let numbers = (event.observation?.namedBankBalances ?? [:]).values.sorted { $0.name < $1.name }.map {
+                        "\($0.name): OCR=\($0.text), count=\($0.count.map { String($0) } ?? "unreadable"), confidence=\($0.confidence), issue=\($0.failureReason ?? "none")"
+                    }.joined(separator: "; ")
+                    return "\(event.timestamp.ISO8601Format()) | \(event.stage.rawValue) | \(event.message) | scores: \(event.observation?.scores.description ?? "") | jewel OCR: \(numbers)"
+                }.joined(separator: "\n")
+                return "Window macro: \(item.entry.profile.name) | window \(item.entry.windowID) | completed runs: \(item.completedRuns)\n" + events
+            }.joined(separator: "\n\n")
+            let report = "Last attempted click: \(lastClick ?? "none")\n" + header + text + "\n\n" + queueLogs
             try report.write(to: url, atomically: true, encoding: .utf8)
         } catch { self.error = error.localizedDescription }
     }
@@ -330,5 +375,142 @@ final class PermissionStatusModel: ObservableObject {
         guard !Task.isCancelled else { return }
         if screenRecordingAllowed != status.screenRecording { screenRecordingAllowed = status.screenRecording }
         if accessibilityAllowed != status.accessibility { accessibilityAllowed = status.accessibility }
+    }
+}
+
+
+@MainActor
+extension SessionModel {
+    func windowRuntime(_ id: UUID) -> WindowMacroRuntime? {
+        windowQueue.items.first { $0.id == id } ?? queueHistory[id]
+    }
+    private func persistWindowProfiles(_ profiles: [WindowMacroProfile]) throws {
+        guard !windowProfilesLoadFailed else {
+            throw WorkflowFailure.prerequisite("The existing window-macros.json could not be read. Recover that file before saving new profiles; it has been left unchanged.")
+        }
+        try WindowMacroProfileStore(url: directory.appendingPathComponent("window-macros.json")).save(profiles)
+        windowProfiles = profiles
+    }
+    func saveWindowProfile(replacing id: UUID? = nil) {
+        guard !locked, !capture.busy else { return }
+        do {
+            if let id {
+                guard editingWindowProfileID == id else { throw WorkflowFailure.prerequisite("Load this profile before updating it.") }
+                if let assigned = queueWindowAssignments[id], capture.selectedID != assigned {
+                    throw WorkflowFailure.prerequisite("Select this profile’s assigned game window before updating it.")
+                }
+            }
+            var config = configuration
+            config.mode = .jewelsOnly; config.helperEnabled = false; config.recoveryEnabled = false; config.skillsEnabled = false
+            let profile = WindowMacroProfile(id: id ?? UUID(), name: windowProfileName.trimmingCharacters(in: .whitespacesAndNewlines),
+                                             configuration: config, settings: settings, calibration: capture.profile)
+            try profile.validate()
+            var profiles = windowProfiles
+            if let id {
+                guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
+                profiles[index] = profile
+            } else { profiles.append(profile) }
+            try persistWindowProfiles(profiles)
+            editingWindowProfileID = profile.id
+            if let windowID = capture.selectedID { queueWindowAssignments[profile.id] = windowID }
+            includedQueueProfiles.insert(profile.id)
+            queueReviewedProfiles.remove(profile.id)
+            if reviewed, reviewedData == (try fingerprint()) { queueReviewedProfiles.insert(profile.id) }
+            error = nil
+        } catch { self.error = error.localizedDescription }
+    }
+    func removeWindowProfile(_ id: UUID) {
+        guard !locked else { return }
+        do {
+            try persistWindowProfiles(windowProfiles.filter { $0.id != id })
+            queueWindowAssignments.removeValue(forKey: id); includedQueueProfiles.remove(id)
+            queueReviewedProfiles.remove(id); queueHistory.removeValue(forKey: id)
+            if editingWindowProfileID == id { editingWindowProfileID = nil }
+        } catch { self.error = error.localizedDescription }
+    }
+    func assignQueueWindow(_ id: UUID, windowID: CGWindowID?) {
+        guard !locked else { return }
+        queueWindowAssignments[id] = windowID; queueReviewedProfiles.remove(id)
+    }
+    func loadWindowProfile(_ id: UUID) {
+        guard !locked, !capture.busy, let profile = windowProfiles.first(where: { $0.id == id }) else { return }
+        do {
+            try capture.applyWindowProfile(profile.calibration, windowID: queueWindowAssignments[id])
+            settings = profile.settings; configuration = profile.configuration; windowProfileName = profile.name
+            editingWindowProfileID = id
+            reviewed = false; reviewedData = nil; error = nil
+        } catch { self.error = error.localizedDescription }
+    }
+    func startWindowQueue(only id: UUID? = nil) {
+        guard !locked, !capture.busy else { return }
+        do {
+            if runner.stage == .waitingForManualIntervention && !failureReviewed {
+                throw WorkflowFailure.prerequisite("Resolve and acknowledge the previous Dashboard workflow before starting a queue.")
+            }
+            guard queueInputConsent else { throw WorkflowFailure.prerequisite("Allow queued input and automatic window switching first.") }
+            if windowQueue.lastError != nil && !queueFailureReviewed {
+                throw WorkflowFailure.prerequisite("Inspect the stopped queue and resolve the failed macro before restarting.")
+            }
+            let profiles = windowProfiles.filter { profile in
+                if let id { return profile.id == id }
+                return includedQueueProfiles.contains(profile.id)
+            }
+            // Validate every entry before binding or focusing any window.
+            guard !profiles.isEmpty else { throw WorkflowFailure.prerequisite("Include at least one saved window macro.") }
+            let assigned = profiles.compactMap { queueWindowAssignments[$0.id] }
+            guard assigned.count == profiles.count, Set(assigned).count == assigned.count else {
+                throw WorkflowFailure.prerequisite("Assign a different current game window to each included macro.")
+            }
+            var entries: [WindowMacroQueueEntry] = []
+            var adapters: [MacWorkflowIO] = []
+            for profile in profiles {
+                try profile.validate()
+                guard !profile.configuration.dryRun else {
+                    throw WorkflowFailure.prerequisite("Load \(profile.name), turn Dry run off on Dashboard, then update that profile.")
+                }
+                guard let window = capture.windows.first(where: { $0.windowID == queueWindowAssignments[profile.id] }) else {
+                    throw WorkflowFailure.prerequisite("Refresh windows and assign the current window for \(profile.name).")
+                }
+                let roles = CalibrationRequirements.roles(configuration: profile.configuration, settings: profile.settings)
+                if !roles.isEmpty && !queueReviewedProfiles.contains(profile.id) {
+                    throw WorkflowFailure.prerequisite("Load \(profile.name), run Detect only, confirm review on Dashboard, then update the profile for this window.")
+                }
+                try MacWorkflowIO.requireTargets(roles, in: profile.calibration,
+                                                 strictGameplayRecognition: profile.configuration.strictGameplayRecognition)
+                let io = try MacWorkflowIO(window: window, profile: profile.calibration,
+                                           strictGameplayRecognition: profile.configuration.strictGameplayRecognition,
+                                           recordedWindow: profile.settings.bankingRecording)
+                entries.append(.init(profile: profile, windowID: window.windowID, io: io)); adapters.append(io)
+            }
+            capture.stopPreview(); queuePreparing = true; queueFailureReviewed = false
+            error = "Queue starts in 5 seconds. It will bring each assigned game window to the front."
+            armTask = Task { [weak self] in
+                guard let self else { return }
+                defer { queuePreparing = false; armTask = nil }
+                do {
+                    try await Task.sleep(nanoseconds: 5_000_000_000)
+                    for io in adapters { try Task.checkCancellation(); try await io.prepareSelectedWindow() }
+                    try Task.checkCancellation()
+                    try windowQueue.start(entries, inputConsent: queueInputConsent)
+                    error = nil
+                } catch is CancellationError { error = "Window queue start cancelled." }
+                catch { self.error = error.localizedDescription }
+            }
+        } catch { self.error = error.localizedDescription }
+    }
+    func resumeWindowQueue(entryID: UUID? = nil) {
+        guard windowQueue.active, !arming else { return }
+        arming = true; error = "Resuming in 5 seconds. Focus the active queue window."
+        armTask = Task { [weak self] in
+            guard let self else { return }
+            defer { arming = false; armTask = nil }
+            do {
+                try await Task.sleep(nanoseconds: 5_000_000_000)
+                try Task.checkCancellation()
+                if let entryID { try windowQueue.resumeEntry(entryID) } else { try windowQueue.resume() }
+                error = nil
+            } catch is CancellationError { error = "Queue resume cancelled." }
+            catch { self.error = error.localizedDescription }
+        }
     }
 }

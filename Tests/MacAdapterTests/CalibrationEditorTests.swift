@@ -116,6 +116,26 @@ final class CalibrationEditorTests: XCTestCase {
         XCTAssertTrue(model.message.contains("enter its fixed OCR phrase"))
     }
 
+    @MainActor func testLoadingWindowMacroCalibrationChangesWorkspaceWithoutOverwritingStartupProfile() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = try fixture(in: directory)
+        let originalData = try Data(contentsOf: url)
+        let model = CaptureModel(profileURL: url); model.role = .bankControl
+        var other = CalibrationProfile()
+        other.targets = [.init(role: .bankControl,
+            region: try NormalizedRegion(x: 0.3, y: 0.4, width: 0.1, height: 0.1), expectedText: "Other bank", threshold: 0.88)]
+        other.namedBankBalances = [.init(name: "Jewel of Soul",
+            region: try NormalizedRegion(x: 0.5, y: 0.4, width: 0.1, height: 0.1), format: .commaGrouped)]
+        try model.applyWindowProfile(other, windowID: 42)
+        XCTAssertEqual(model.selectedID, 42)
+        XCTAssertEqual(model.expectedText, "Other bank")
+        XCTAssertEqual(model.threshold, 0.88)
+        XCTAssertEqual(model.profile.namedBankBalances.map(\.id), other.namedBankBalances.map(\.id))
+        XCTAssertNil(model.image); XCTAssertNil(model.detection)
+        XCTAssertEqual(try Data(contentsOf: url), originalData, "Loading for editing must not replace the user's startup calibration")
+    }
+
     private func fixture(in directory: URL) throws -> URL {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent("calibration.json")
