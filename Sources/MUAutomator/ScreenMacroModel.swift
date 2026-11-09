@@ -45,7 +45,9 @@ final class ScreenMacroModel: ObservableObject {
         if let localKeys { NSEvent.removeMonitor(localKeys) }
         // NSEvent monitor callbacks run on the main thread; keep captured events in arrival order.
         globalKeys = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            MainActor.assumeIsolated { self?.handleShortcut(event) }
+            MainActor.assumeIsolated { () -> Void in
+                _ = self?.handleShortcut(event)
+            }
         }
         localKeys = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             let handled = MainActor.assumeIsolated { self?.handleShortcut(event) == true }
@@ -90,7 +92,9 @@ final class ScreenMacroModel: ObservableObject {
                 buffer = ScreenMacroBuffer(layout: layout)
                 recordingStarted = ProcessInfo.processInfo.systemUptime
                 monitor = NSEvent.addGlobalMonitorForEvents(matching: DesktopEventCapture.mask) { [weak self] event in
-                    MainActor.assumeIsolated { self?.capture(event) }
+                    MainActor.assumeIsolated { () -> Void in
+                        _ = self?.capture(event)
+                    }
                 }
                 guard monitor != nil else { throw ScreenMacroError.invalid("Could not monitor input. Enable Input Monitoring and Accessibility, then reopen the app.") }
                 recordCountdown = false
