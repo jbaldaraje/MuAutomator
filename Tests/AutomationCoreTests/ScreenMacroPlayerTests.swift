@@ -4,6 +4,7 @@ import XCTest
 @MainActor
 private final class DesktopTestIO: ScreenMacroIO {
     var events: [ScreenEvent] = []
+    var eventTimes: [Double] = []
     var heldKeys: Set<UInt16> = []
     var releases = 0
     var currentWindow = "A"
@@ -14,7 +15,7 @@ private final class DesktopTestIO: ScreenMacroIO {
         if !valid { throw ScreenMacroError.invalid("Desktop changed or permission revoked") }
     }
     func perform(_ event: ScreenEvent) throws {
-        events.append(event)
+        events.append(event); eventTimes.append(ProcessInfo.processInfo.systemUptime)
         switch event.action {
         case .keyDown(let code, _): heldKeys.insert(code)
         case .keyUp(let code): heldKeys.remove(code)
@@ -118,6 +119,59 @@ final class ScreenMacroPlayerTests: XCTestCase {
         try await until { !player.active }
         XCTAssertEqual(player.phase, .stopped)
         XCTAssertLessThan(io.events.count, 4096)
+    }
+
+    @MainActor func testIntervalWaitsAfterWholeReplayAndReleasesHeldInput() async throws {
+        let player = ScreenMacroPlayer(); let io = DesktopTestIO()
+        io.onEvent = { if io.events.count == 3 { player.stop() } }
+        var waited = false
+        player.onChange = {
+            if player.phase == .waiting {
+                waited = true
+                XCTAssertTrue(io.heldKeys.isEmpty)
+                XCTAssertGreaterThan(io.releases, 0)
+            }
+        }
+        try player.start(macro(duration: 0.03), hours: 1, intervalSeconds: 0.06, io: io, countdown: 0)
+        try await until { !player.active }
+        XCTAssertTrue(waited)
+        XCTAssertEqual(player.phase, .stopped)
+        XCTAssertEqual(player.completedCycles, 1)
+        XCTAssertEqual(io.events.count, 3)
+        if io.eventTimes.count == 3 {
+            XCTAssertGreaterThanOrEqual(io.eventTimes[2] - io.eventTimes[0], 0.088,
+                                       "The interval starts after the complete macro, including its tail wait")
+        }
+    }
+    @MainActor func testIntervalCountsTowardHoursAndDoesNotStartAnExtraReplay() async throws {
+        let player = ScreenMacroPlayer(); let io = DesktopTestIO()
+        defer { player.stop() }
+        try player.start(macro(), hours: 0.08 / 3600, intervalSeconds: 10, io: io, countdown: 0)
+        try await until { !player.active }
+        XCTAssertEqual(player.phase, .completed)
+        XCTAssertEqual(player.completedCycles, 1)
+        XCTAssertEqual(io.events.count, 2)
+        XCTAssertGreaterThanOrEqual(player.elapsed, 0.08)
+        XCTAssertEqual(player.intervalRemaining, 0)
+    }
+    @MainActor func testStopDuringRepeatIntervalCancelsNextReplay() async throws {
+        let player = ScreenMacroPlayer(); let io = DesktopTestIO()
+        try player.start(macro(), hours: 1, intervalSeconds: 10, io: io, countdown: 0)
+        try await until { player.phase == .waiting }
+        XCTAssertTrue(io.heldKeys.isEmpty)
+        XCTAssertGreaterThan(player.intervalRemaining, 0)
+        player.stop()
+        try await until { !player.active }
+        XCTAssertEqual(player.phase, .stopped)
+        XCTAssertEqual(player.completedCycles, 1)
+        XCTAssertEqual(io.events.count, 2)
+    }
+    @MainActor func testInvalidRepeatIntervalsAreRejectedWithoutInput() async throws {
+        let player = ScreenMacroPlayer(); let io = DesktopTestIO()
+        for interval in [-1, Double.nan, .infinity, 86400.1] {
+            XCTAssertThrowsError(try player.start(macro(), hours: 1, intervalSeconds: interval, io: io))
+        }
+        XCTAssertFalse(player.active); XCTAssertTrue(io.events.isEmpty)
     }
 
 }

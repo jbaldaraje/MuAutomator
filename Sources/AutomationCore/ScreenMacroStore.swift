@@ -2,10 +2,22 @@ import Foundation
 
 public struct ScreenMacroSettings: Codable, Equatable, Sendable {
     public var hours: Double
-    public init(hours: Double = 1) { self.hours = hours }
+    public var intervalSeconds: Double
+    public init(hours: Double = 1, intervalSeconds: Double = 0) {
+        self.hours = hours; self.intervalSeconds = intervalSeconds
+    }
+    private enum CodingKeys: String, CodingKey { case hours, intervalSeconds }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        hours = try values.decode(Double.self, forKey: .hours)
+        intervalSeconds = try values.decodeIfPresent(Double.self, forKey: .intervalSeconds) ?? 0
+    }
     public func validate() throws {
         guard hours.isFinite, hours > 0, hours <= 8760 else {
             throw ScreenMacroError.invalid("Enter hours greater than zero and no more than 8,760. Decimals are supported.")
+        }
+        guard intervalSeconds.isFinite, (0...86400).contains(intervalSeconds) else {
+            throw ScreenMacroError.invalid("Enter a repeat interval from 0 to 86,400 seconds. Decimals are supported.")
         }
     }
 }

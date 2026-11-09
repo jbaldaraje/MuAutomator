@@ -13,6 +13,7 @@ final class ScreenMacroModel: ObservableObject {
     @Published private(set) var message = "Record once. Replay across your desktop for the hours you choose."
     @Published private(set) var accessibilityAllowed = false
     @Published var hours = 1.0
+    @Published var intervalSeconds = 0.0
     let player = ScreenMacroPlayer()
     private let store: ScreenMacroStore
     private var buffer: ScreenMacroBuffer?
@@ -29,13 +30,18 @@ final class ScreenMacroModel: ObservableObject {
         store = ScreenMacroStore(directory: directory)
         do { recording = try store.load() }
         catch { message = "Saved macro could not be read; the file was left unchanged. \(error.localizedDescription)" }
-        do { hours = try store.loadSettings().hours }
+        do {
+            let settings = try store.loadSettings()
+            hours = settings.hours; intervalSeconds = settings.intervalSeconds
+        }
         catch { message = "Saved hours could not be read; the file was left unchanged. \(error.localizedDescription)" }
         player.onChange = { [weak self] in
             guard let self else { return }
             if let error = player.error { message = error }
             else if player.phase == .completed { message = "Finished \(player.completedCycles) complete replays." }
             else if player.phase == .stopped { message = "Playback stopped. Injected keys and mouse buttons released." }
+            else if player.phase == .waiting { message = "Waiting between complete replays. Stop remains available." }
+            else if player.phase == .playing { message = "Replaying across the desktop. Cursor movement and window changes won’t stop it." }
             objectWillChange.send()
         }
         installShortcuts()
@@ -154,17 +160,17 @@ final class ScreenMacroModel: ObservableObject {
         buffer = nil; recordingActive = false; recordCountdown = false
     }
     private func cancelRecording() { removeRecordingMonitor() }
-    func saveHours() {
-        do { try store.saveSettings(ScreenMacroSettings(hours: hours)) }
+    func savePlaybackSettings() {
+        do { try store.saveSettings(ScreenMacroSettings(hours: hours, intervalSeconds: intervalSeconds)) }
         catch { message = error.localizedDescription }
     }
     func play() {
         guard !busy, let recording else { return }
         do {
-            try store.saveSettings(ScreenMacroSettings(hours: hours))
+            try store.saveSettings(ScreenMacroSettings(hours: hours, intervalSeconds: intervalSeconds))
             installShortcuts()
             guard globalKeys != nil else { throw ScreenMacroError.invalid("Could not install Emergency Stop. Check input permissions and reopen the app.") }
-            try player.start(recording, hours: hours, io: DesktopInput())
+            try player.start(recording, hours: hours, intervalSeconds: intervalSeconds, io: DesktopInput())
             message = "Playback starts in 5 seconds. Cursor movement and changing windows will not stop it."
         } catch { message = error.localizedDescription }
     }
@@ -189,7 +195,7 @@ final class ScreenMacroModel: ObservableObject {
         catch { message = error.localizedDescription }
     }
     func shutDown() {
-        saveHours()
+        savePlaybackSettings()
         stop()
         if let globalKeys { NSEvent.removeMonitor(globalKeys) }; globalKeys = nil
         if let localKeys { NSEvent.removeMonitor(localKeys) }; localKeys = nil

@@ -8,7 +8,7 @@ public protocol ScreenMacroIO: AnyObject {
 }
 
 public enum ScreenMacroPhase: String, Sendable {
-    case idle, countdown, playing, completed, stopped, failed
+    case idle, countdown, playing, waiting, completed, stopped, failed
 }
 
 /// Replays absolute desktop events. There is deliberately no window, focus, or physical-cursor gate.
@@ -22,24 +22,29 @@ public final class ScreenMacroPlayer {
     private var io: (any ScreenMacroIO)?
     private var startedAt: Double?
     private var countdownEnd = 0.0
+    private var intervalEnd = 0.0
     private var budget = 0.0
     private var finalElapsed = 0.0
     public init() {}
     public var active: Bool { task != nil }
     public var elapsed: Double {
-        if phase == .playing, let startedAt { return max(0, ProcessInfo.processInfo.systemUptime - startedAt) }
+        if phase == .playing || phase == .waiting, let startedAt { return max(0, ProcessInfo.processInfo.systemUptime - startedAt) }
         return finalElapsed
     }
     public var remaining: Double { max(0, budget - elapsed) }
+    public var intervalRemaining: Double {
+        phase == .waiting ? max(0, intervalEnd - ProcessInfo.processInfo.systemUptime) : 0
+    }
     public var countdownRemaining: Int { max(0, Int(ceil(countdownEnd - ProcessInfo.processInfo.systemUptime))) }
 
-    public func start(_ macro: ScreenMacro, hours: Double, io: any ScreenMacroIO, countdown: Double = 5) throws {
+    public func start(_ macro: ScreenMacro, hours: Double, intervalSeconds: Double = 0, io: any ScreenMacroIO, countdown: Double = 5) throws {
         guard !active else { throw ScreenMacroError.invalid("Stop the current playback first.") }
         try macro.validate()
-        try ScreenMacroSettings(hours: hours).validate()
+        try ScreenMacroSettings(hours: hours, intervalSeconds: intervalSeconds).validate()
         guard countdown.isFinite, (0...60).contains(countdown) else { throw ScreenMacroError.invalid("Invalid countdown.") }
         try io.validate(layout: macro.layout)
         self.io = io; budget = hours * 3600; completedCycles = 0; error = nil; startedAt = nil; finalElapsed = 0
+        intervalEnd = 0
         countdownEnd = ProcessInfo.processInfo.systemUptime + countdown
         phase = .countdown
         task = Task { [weak self] in
@@ -65,6 +70,15 @@ public final class ScreenMacroPlayer {
                     try await wait(until: cycleStart + macro.duration, layout: macro.layout, io: io)
                     io.releaseAll()
                     completedCycles += 1; onChange?()
+                    let now = ProcessInfo.processInfo.systemUptime
+                    if intervalSeconds > 0 && now < stopAt {
+                        intervalEnd = min(now + intervalSeconds, stopAt)
+                        phase = .waiting; onChange?()
+                        try await wait(until: intervalEnd, layout: macro.layout, io: io)
+                        if ProcessInfo.processInfo.systemUptime < stopAt {
+                            phase = .playing; onChange?()
+                        }
+                    }
                 }
                 finalElapsed = elapsed; phase = .completed
             } catch is CancellationError {

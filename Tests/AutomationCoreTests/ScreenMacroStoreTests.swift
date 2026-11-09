@@ -58,4 +58,20 @@ final class ScreenMacroStoreTests: XCTestCase {
             XCTAssertEqual(try store.loadSettings().hours, 1)
         }
     }
+    func testRepeatIntervalPersistsAndHoursOnlySettingsRemainCompatible() throws {
+        try withStore { store in
+            let settingsFile = store.directory.appendingPathComponent("screen-macro-settings.json")
+            try Data(#"{"hours":0.5}"#.utf8).write(to: settingsFile)
+            let legacy = try store.loadSettings()
+            XCTAssertEqual(legacy.hours, 0.5)
+            XCTAssertEqual(legacy.intervalSeconds, 0)
+            try store.saveSettings(.init(hours: 2, intervalSeconds: 60.5))
+            XCTAssertEqual(try store.loadSettings(), .init(hours: 2, intervalSeconds: 60.5))
+            for interval in [-1, Double.nan, .infinity, 86400.1] {
+                XCTAssertThrowsError(try store.saveSettings(.init(hours: 2, intervalSeconds: interval)))
+            }
+            XCTAssertEqual(try store.loadSettings().intervalSeconds, 60.5)
+        }
+    }
+
 }

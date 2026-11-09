@@ -69,6 +69,10 @@ final class MacroWindowTests: XCTestCase {
             NSApplication.shared.setActivationPolicy(.regular)
         }
         window.makeKeyAndOrderFront(nil)
+        MacroAppDelegate.hide()
+        XCTAssertFalse(window.isVisible)
+        MacroAppDelegate.show()
+        XCTAssertTrue(window.isVisible)
         window.performClose(nil)
         XCTAssertFalse(window.isVisible)
         XCTAssertTrue(MacroAppDelegate.mainWindow === window)

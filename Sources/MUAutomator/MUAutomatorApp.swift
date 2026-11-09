@@ -14,20 +14,12 @@ struct MUAutomatorApp: App {
                 .onAppear { delegate.model = model }
         }
         .defaultSize(width: 560, height: 610)
-        MenuBarExtra("MU Automator", systemImage: model.busy ? "record.circle.fill" : "cursorarrow.motionlines") {
-            Text(model.recordingActive ? "Recording desktop" : model.player.phase.rawValue.capitalized)
-            Button("Show recorder") { MacroAppDelegate.show() }
-            if model.recordingActive {
-                Button("Finish recording") { model.finishRecording() }
-            } else {
-                Button("Record in 5 seconds") { model.startRecording() }.disabled(model.busy)
-                Button("Play for \(model.hours.formatted()) hours") { model.play() }
-                    .disabled(model.busy || model.recording == nil)
-            }
-            Button("Stop", role: .destructive) { model.stop() }.disabled(!model.busy)
-            Divider()
-            Button("Quit") { NSApplication.shared.terminate(nil) }
+        MenuBarExtra {
+            MacroStatusMenu(model: model)
+        } label: {
+            MacroStatusLabel(model: model)
         }
+        .menuBarExtraStyle(.window)
     }
 }
 
@@ -44,9 +36,12 @@ private struct ScreenMacroView: View {
                         Text("Mouse & keyboard recording for your whole desktop").font(.callout).foregroundStyle(.secondary)
                     }
                     Spacer()
+                    Button { MacroAppDelegate.hide() } label: {
+                        Label("Hide", systemImage: "menubar.arrow.up.rectangle")
+                    }.help("Hide to menu bar; keep recording or playback running")
                 }
                 HStack {
-                    Label(model.recording.map { "\($0.events.count.formatted()) events · \(duration($0.duration))" } ?? "No recording yet",
+                    Label(model.recording.map { "\($0.events.count.formatted()) events · \(macroDuration($0.duration))" } ?? "No recording yet",
                           systemImage: "waveform.path")
                         .font(.callout.monospacedDigit())
                     Spacer()
@@ -57,10 +52,20 @@ private struct ScreenMacroView: View {
                     Text("Run for")
                     TextField("Hours", value: $model.hours, format: .number)
                         .textFieldStyle(.roundedBorder).frame(width: 100)
-                        .disabled(model.busy).onSubmit { model.saveHours() }
+                        .disabled(model.busy).onSubmit { model.savePlaybackSettings() }
                     Text("hours").foregroundStyle(.secondary)
                     Spacer()
                 }
+                HStack {
+                    Text("Repeat interval")
+                    TextField("Seconds", value: $model.intervalSeconds, format: .number)
+                        .textFieldStyle(.roundedBorder).frame(width: 100)
+                        .disabled(model.busy).onSubmit { model.savePlaybackSettings() }
+                    Text("seconds").foregroundStyle(.secondary)
+                    Spacer()
+                }
+                Text("The interval is a pause after each full replay. 0 repeats immediately; 60 waits one minute. Waiting counts toward your run hours.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Text("Decimal hours work too: 0.5 = 30 minutes. The current replay finishes when the timer ends.")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack(spacing: 12) {
@@ -80,8 +85,12 @@ private struct ScreenMacroView: View {
                         } else if model.player.phase == .countdown && model.player.active {
                             Text("Playback begins in \(model.player.countdownRemaining)…").font(.headline)
                         } else if model.player.active {
-                            Text("\(model.player.completedCycles.formatted()) replays · \(duration(model.player.remaining)) remaining")
+                            Text("\(model.player.completedCycles.formatted()) replays · \(macroDuration(model.player.remaining)) remaining")
                                 .font(.headline.monospacedDigit())
+                            if model.player.phase == .waiting {
+                                Text("Next replay in \(macroDuration(model.player.intervalRemaining))")
+                                    .font(.callout.monospacedDigit()).foregroundStyle(.orange)
+                            }
                         }
                         Text(model.message).font(.callout).textSelection(.enabled)
                     }.frame(maxWidth: .infinity, alignment: .leading)
@@ -101,16 +110,14 @@ private struct ScreenMacroView: View {
         .background(MacroWindowAppearance().frame(width: 0, height: 0))
         .task { await model.refreshPermissions() }
         .onChange(of: model.hours) { _, value in
-            if (try? ScreenMacroSettings(hours: value).validate()) != nil { model.saveHours() }
+            if (try? ScreenMacroSettings(hours: value, intervalSeconds: model.intervalSeconds).validate()) != nil { model.savePlaybackSettings() }
+        }
+        .onChange(of: model.intervalSeconds) { _, value in
+            if (try? ScreenMacroSettings(hours: model.hours, intervalSeconds: value).validate()) != nil { model.savePlaybackSettings() }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             Task { await model.refreshPermissions() }
         }
-    }
-    private func duration(_ seconds: Double) -> String {
-        guard seconds.isFinite else { return "—" }
-        let total = max(0, Int(ceil(seconds)))
-        return String(format: "%d:%02d:%02d", total / 3600, total / 60 % 60, total % 60)
     }
 }
 
@@ -129,6 +136,10 @@ final class MacroAppDelegate: NSObject, NSApplicationDelegate {
         }
         return .terminateLater
     }
+    static func hide() {
+        mainWindow?.orderOut(nil)
+        NSApplication.shared.setActivationPolicy(.accessory)
+    }
     static func show() {
         NSApplication.shared.setActivationPolicy(.regular)
         mainWindow?.deminiaturize(nil); mainWindow?.makeKeyAndOrderFront(nil)
@@ -146,7 +157,7 @@ final class MacroWindowHost: NSView, NSWindowDelegate {
         window.isOpaque = false; window.backgroundColor = .clear; window.titlebarAppearsTransparent = true
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        sender.orderOut(nil); NSApplication.shared.setActivationPolicy(.accessory)
+        MacroAppDelegate.hide()
         return false
     }
 }
@@ -155,4 +166,105 @@ final class MacroWindowHost: NSView, NSWindowDelegate {
 private struct MacroWindowAppearance: NSViewRepresentable {
     func makeNSView(context: Context) -> MacroWindowHost { MacroWindowHost() }
     func updateNSView(_ view: MacroWindowHost, context: Context) {}
+}
+
+
+private func macroDuration(_ seconds: Double) -> String {
+    guard seconds.isFinite else { return "—" }
+    let total = max(0, Int(ceil(seconds)))
+    return String(format: "%d:%02d:%02d", total / 3600, total / 60 % 60, total % 60)
+}
+
+@MainActor
+private extension ScreenMacroModel {
+    var barText: String {
+        if recordingActive { return recordCountdown ? "READY" : "REC" }
+        switch player.phase {
+        case .countdown: return "START"
+        case .playing: return "PLAY"
+        case .waiting: return "WAIT"
+        case .completed: return "DONE"
+        case .stopped: return "STOP"
+        case .failed: return "ERROR"
+        case .idle: return ""
+        }
+    }
+    var barSymbol: String {
+        if recordingActive { return recordCountdown ? "timer" : "record.circle.fill" }
+        switch player.phase {
+        case .countdown: return "timer"
+        case .playing: return "play.fill"
+        case .waiting: return "hourglass"
+        case .completed: return "checkmark.circle.fill"
+        case .stopped: return "stop.fill"
+        case .failed: return "exclamationmark.triangle.fill"
+        case .idle: return "cursorarrow.motionlines"
+        }
+    }
+    var barColor: Color {
+        if recordingActive { return recordCountdown ? .orange : .red }
+        switch player.phase {
+        case .playing, .completed: return .green
+        case .waiting, .countdown: return .orange
+        case .failed: return .red
+        default: return .primary
+        }
+    }
+}
+
+@MainActor
+private struct MacroStatusLabel: View {
+    @ObservedObject var model: ScreenMacroModel
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: model.barSymbol).symbolRenderingMode(.palette).foregroundStyle(model.barColor)
+            if !model.barText.isEmpty { Text(model.barText).font(.caption.weight(.semibold)) }
+        }
+        .accessibilityLabel("MU Automator: \(model.barText.isEmpty ? "Ready" : model.barText)")
+        .help("MU Automator: \(model.barText.isEmpty ? "Ready" : model.barText)")
+    }
+}
+
+@MainActor
+private struct MacroStatusMenu: View {
+    @ObservedObject var model: ScreenMacroModel
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                VStack(alignment: .leading, spacing: 6) {
+                    Label(model.recordingActive ? (model.recordCountdown ? "Recording starts shortly" : "Recording desktop")
+                          : model.player.phase.rawValue.capitalized, systemImage: model.barSymbol)
+                        .font(.headline).foregroundStyle(model.barColor)
+                    if model.player.active {
+                        Text("\(model.player.completedCycles.formatted()) complete replays").monospacedDigit()
+                        Text("Time remaining: \(macroDuration(model.player.remaining))").monospacedDigit()
+                        if model.player.phase == .waiting {
+                            Text("Next replay in \(macroDuration(model.player.intervalRemaining))").monospacedDigit()
+                        } else if model.player.phase == .countdown {
+                            Text("Starts in \(model.player.countdownRemaining) seconds").monospacedDigit()
+                        }
+                    }
+                    if let error = model.player.error { Text(error).font(.caption).foregroundStyle(.red) }
+                }
+            }
+            Divider()
+            HStack {
+                Button("Show recorder") { MacroAppDelegate.show(); dismiss() }
+                Button("Hide recorder") { MacroAppDelegate.hide(); dismiss() }
+            }
+            if model.recordingActive {
+                Button("Finish recording") { model.finishRecording(); dismiss() }
+            } else {
+                Button("Record in 5 seconds") { model.startRecording(); dismiss() }.disabled(model.busy)
+                Button("Play for \(model.hours.formatted()) hours") { model.play(); dismiss() }
+                    .disabled(model.busy || model.recording == nil)
+            }
+            Button("Stop", role: .destructive) { model.stop() }.disabled(!model.busy)
+            Divider()
+            Button("Quit") { NSApplication.shared.terminate(nil) }
+        }
+        .buttonStyle(.bordered)
+        .padding(16).frame(width: 310, alignment: .leading)
+    }
 }
